@@ -348,9 +348,7 @@ inline void record(GJBaseGameLayer* l, long long t) {
     r.onGround2 = p->m_isOnGround2 ? 1 : 0;
     r.flip = p->m_isUpsideDown ? 1 : 0;
     r.mini = (p->m_vehicleSize < 0.9f) ? 1 : 0;
-    const bool twoPlayer = (l->m_levelSettings && l->m_levelSettings->m_twoPlayerMode)
-                        || (l->m_level && l->m_level->m_twoPlayerMode);
-    const bool p2InPlay = (l->m_gameState.m_isDualMode || twoPlayer) && l->m_player2 && l->m_player2 != l->m_player1;
+    const bool p2InPlay = l->m_gameState.m_isDualMode && l->m_player2 && l->m_player2 != l->m_player1;
     r.dual = p2InPlay ? 1 : 0;
     r.y2 = (r.dual && l->m_player2) ? l->m_player2->getPositionY() : 0.f;
     r.x2 = (r.dual && l->m_player2) ? l->m_player2->getPositionX() : 0.f;
@@ -7039,6 +7037,23 @@ inline bool refuseIfPlatformer(GJBaseGameLayer* l) {
     return true;
 }
 
+/// Refuses to solve two-player levels, matching platformer mode handling.
+inline bool refuseIfTwoPlayer(GJBaseGameLayer* l) {
+    bool twoP = l->m_levelSettings && l->m_levelSettings->m_twoPlayerMode;
+    if (auto* pl = PlayLayer::get())
+        if (pl->m_level && pl->m_level->m_twoPlayerMode) twoP = true;
+    if (!twoP) return false;
+    if (g_sessionOver) return true;   // one ending per session
+    const char* note =
+        "gdsolver: this is a 2-PLAYER level - not solving it";
+    writeResult("dpsolve: refusing - two-player mode is unsupported. "
+                "Nothing was searched and no plan was produced.");
+    notify::show(note, NotificationIcon::Error, 6.f);
+    g_paused = true;
+    endSession("two_player_unsupported");
+    return true;
+}
+
 // The keys of `now` whose value is not the one in `defs` (both effcfg::modCfg lines), as
 // `key=value(default)`; "-" when none differ.
 inline std::string cfgDiffLine(const std::string& defs, const std::string& now) {
@@ -7066,6 +7081,7 @@ inline std::string cfgDiffLine(const std::string& defs, const std::string& now) 
 inline void start(GJBaseGameLayer* l) {
     if (!l) return;
     if (refuseIfPlatformer(l)) return;
+    if (refuseIfTwoPlayer(l)) return;
     // autorun.cfg named a key the flag clean-up removed (session.hpp kRemovedCfg, which
     // printed each one): refuse to solve rather than run a loop that ignores what was asked.
     if (!g_cfgRemoved.empty()) {

@@ -262,12 +262,127 @@ inline std::atomic<bool> g_ladderStop{false};
 // ---- where the search is going ----------------------------------------------------------------
 // The goal and the route the layer loop is asked to reach, kept apart from how it searches
 // (search-plugin cut 5). searchLayers takes any type with these members; CurrentRules is today's:
+inline bool humanPortSeenBy(const State& st, int32_t uid) {
+    if (uid < 0) return false;
+    for (int i = 0; i < 3; ++i)
+        if (st.portSeen[i] == uid || st.portSeen2[i] == uid) return true;
+    return false;
+}
+
+inline bool humanPortalChangesUnseen(const State& s, const State& kid, const Obj& p) {
+    const int pt = p.type;
+    const int mTarg = modePortalTarget(pt);
+    const bool isSize = (pt == 17 || pt == 18);
+    const bool isGrav = isGravPortalType(pt);
+    const bool isDual = (pt == 23 || pt == 24);
+    const bool isTp = (pt == 28);
+    if (mTarg < 0 && !isSize && !isGrav && !isDual && !isTp) return false;
+    if (humanPortSeenBy(kid, p.uid)) return false;
+    if ((isGrav || isTp) && p.gpBit >= 0 && kid.portalLatch.test(p.gpBit)) return false;
+    if (isTp && (kid.tpSkip & 3) != 0) return false;
+
+    if (mTarg >= 0)
+        return (s.mode != (uint8_t)mTarg) || (s.dual && s.mode2 != (uint8_t)mTarg);
+    if (isSize) {
+        const uint8_t wantMini = (pt == 18) ? 1 : 0;
+        return (s.mini != wantMini) || (s.dual && s.mini2 != wantMini);
+    }
+    if (isGrav) {
+        if (pt == 42) return true;
+        const uint8_t wantUp = (pt == 3) ? 1 : 0;
+        const uint8_t gdUp2 = (s.frame == 3) ? (uint8_t)!s.flip2 : s.flip2;
+        return (gdUpOf(s) != wantUp) || (s.dual && gdUp2 != wantUp);
+    }
+    if (isDual)
+        return (s.dual != (uint8_t)(pt == 23 ? 1 : 0));
+    return true;
+}
+
+inline int humanPortalSkipPenalty(const State& s, const State& kid,
+                                  const std::vector<const Obj*>& ports,
+                                  const std::vector<const Obj*>& spds, double half) {
+    if (kid.frame != 0) return 0;
+    const double sx0 = (double)s.xAbs;
+    const double kx = (double)kid.xAbs;
+    const double ky = (double)kid.y;
+    // A teleport jump skips over intermediate x coordinates in one tick; do not penalize portals behind the jump.
+    if (std::fabs(kx - sx0) > 25.0) return 0;
+    const double xMin = std::min(sx0, kx);
+    const double xMax = std::max(sx0, kx);
+    const bool waveActive = (s.mode == 4 || kid.mode == 4 || (s.dual && (s.mode2 == 4 || kid.mode2 == 4)));
+    int pen = 0;
+
+    auto speedSeenBy = [](const State& st, int32_t uid) {
+        if (uid < 0) return false;
+        for (int i = 0; i < 2; ++i)
+            if (st.spdFired[i] == uid || st.spdMore[i] == uid) return true;
+        if (st.dual) {
+            for (int i = 0; i < 2; ++i)
+                if (st.spdFired2[i] == uid || st.spdMore2[i] == uid) return true;
+        }
+        return st.spdSpill && !st.dual && spdSpillHas(st.spdSpill, uid);
+    };
+    const auto portalMissed = [&](const Obj& o) {
+        const double spanH = o.oriented ? std::max(o.hh, o.hw) : o.hh;
+        const double gapY = std::fabs(ky - o.cy) - (spanH + half);
+        const bool inBand = (kid.bandCeil > kid.bandFloor)
+                            && (o.cy >= (double)kid.bandFloor - 90.0
+                                && o.cy <= (double)kid.bandCeil + 90.0);
+        const double maxGapY = inBand ? 1e9 : 520.0;
+        return o.oriented
+                   ? (!orientedHit(o, kx, ky, half, (double)kid.rot) && gapY < maxGapY)
+                   : (gapY > 0.0 && gapY < maxGapY);
+    };
+
+    const int portCost = waveActive ? 100000 : 50000;
+    for (const Obj* p : ports) {
+        if (p->cx <= xMin || p->cx > xMax) continue;
+        if (!humanPortalChangesUnseen(s, kid, *p)) continue;
+        if (portalMissed(*p)) pen += portCost;
+    }
+
+    const int spdCost = waveActive ? 30000 : 15000;
+    for (const Obj* sp : spds) {
+        if (sp->cx <= xMin || sp->cx > xMax) continue;
+        if (!isSpeedId(sp->id)) continue;
+        if (speedSeenBy(kid, sp->uid)) continue;
+        if (std::fabs((double)s.dx - dxForSpeedId(sp->id)) <= 1e-6) continue;
+
+        if (portalMissed(*sp)) pen += spdCost;
+    }
+    return pen;
+}
+
+// Deter mini-wave / big-wave rapid zigzagging just before or around an unvisited state-changing portal
+// when vertically outside the portal's entry span (the pattern used to hover flat and dodge portals).
+inline int humanWavePortalSpamPenalty(const State& s, const State& kid, int input,
+                                      const std::vector<const Obj*>& ports, double half) {
+    if (kid.frame != 0 || input == (int)s.action) return 0;
+    const bool isWave = (s.mode == 4 || (s.dual && s.mode2 == 4));
+    if (!isWave) return 0;
+    const int age = (int)s.edgeAge;
+    if (age >= 12) return 0;
+    const double kx = (double)kid.xAbs, ky = (double)kid.y;
+    const bool mini = (s.mode == 4 ? s.mini != 0 : s.mini2 != 0);
+    for (const Obj* p : ports) {
+        const double dxToP = s.rev ? (kx - p->cx) : (p->cx - kx);
+        if (dxToP < -24.0 || dxToP > 160.0) continue;
+        if (!humanPortalChangesUnseen(s, kid, *p)) continue;
+        const double spanH = p->oriented ? std::max(p->hh, p->hw) : p->hh;
+        if (std::fabs(ky - p->cy) > spanH + half) {
+            const int base = (age < 4) ? 2400 : ((age < 8) ? 1400 : 700);
+            return mini ? (base * 3) / 2 : base;
+        }
+    }
+    return 0;
+}
+
 inline int humanEffectiveTight(const State& s) {
     int sc = (int)s.tight;
     if (g_solveProfile == 3) {
         if (s.mode == 4) {
             const int minHold = s.mini ? 12 : 16;
-            if ((int)s.edgeAge < minHold) sc += (minHold - (int)s.edgeAge) * 6;
+            if ((int)s.edgeAge < minHold) sc += (minHold - (int)s.edgeAge) * (s.mini ? 22 : 16);
         } else if (s.mode == 1) {
             if ((int)s.edgeAge < 12) sc += (12 - (int)s.edgeAge) * 5;
         } else if (s.mode == 3 || s.mode == 7) {
@@ -1318,6 +1433,9 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                       pLo, pHi, t);
         ppSubMark(3);
         const std::vector<const Obj*>& near = env.near;
+        const FrameSlices& gfs = model.w.fsl[(size_t)(gframe & 3)];
+        const XSlice* nearSlice = gfs.near.get();
+        const Dynamics* dyn = gfs.lv ? &gfs.lv->dyn : nullptr;
         const std::vector<const Obj*>& ports = env.ports;
         const std::vector<const Obj*>& pads = env.pads;
         const std::vector<const Obj*>& orbs = env.orbs;
@@ -1567,14 +1685,16 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                     //      penalties for rapid double-clicks, while releases (1->0) are free after a
                     //      natural human tap duration (3-6 ticks) and lingering holds gently decay so the
                     //      bot releases the button naturally like a real player.
-                    if (holdSteered) {
+                    const bool anyWave = (s.mode == 4 || (s.dual && s.mode2 == 4));
+                    if (holdSteered || anyWave) {
                         if (input != (int)s.action) {
-                            if (s.mode == 4) { // Wave: crisp diagonal strokes, never 2-tick micro-spam
-                                addTight(42);
-                                if (age < 4)       addTight(320); // >60 CPS micro-vibration
-                                else if (age < 8)  addTight(185); // >30 CPS tiny spam burst
-                                else if (age < 13) addTight(75);  // >18.5 CPS fast flutter
-                                else if (age < 18) addTight(24);  // >13.3 CPS
+                            if (anyWave) { // Wave & Mini-Wave: crisp diagonal strokes, never flat-hover spam
+                                const bool miniWave = (s.mode == 4) ? (s.mini != 0) : (s.mini2 != 0);
+                                addTight(miniWave ? 85 : 65);
+                                if (age < 4)       addTight(miniWave ? 1350 : 950); // >60 CPS micro-vibration
+                                else if (age < 8)  addTight(miniWave ? 760  : 520); // >30 CPS tiny spam burst
+                                else if (age < 13) addTight(miniWave ? 320  : 210); // >18.5 CPS fast flutter
+                                else if (age < 18) addTight(miniWave ? 95   : 65);  // >13.3 CPS
                             } else { // Ship (mode == 1): steady human tapping in corridors, clean unbroken holds on steep climbs
                                 addTight(24);
                                 if (age < 5)       addTight(290); // >24 CPS micro-spam
@@ -1729,7 +1849,8 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                                                            : (input == 1);
                             if (initiatedJump && kid.s.usedOrb == nullptr) {
                                 const int jumpPen = groundJumpTimingPenalty(
-                                    near, slps, pads, (double)s.xAbs, (double)s.y, half, sc, rv, s.flip != 0);
+                                    near, slps, pads, (double)s.xAbs, (double)s.y, half, sc, rv, s.flip != 0,
+                                    nearSlice, dyn);
                                 if (jumpPen > 0) addTight(jumpPen);
                             }
                         }
@@ -1742,7 +1863,8 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                                                         : (input == 1);
                         if (initiatedJump2 && kid.s.usedOrb2 == nullptr) {
                             const int jumpPen2 = groundJumpTimingPenalty(
-                                near, slps, pads, (double)s.xAbs + (double)s.dx2, (double)s.y2, half2, sc2, s.rev != 0, s.flip2 != 0);
+                                near, slps, pads, (double)s.xAbs + (double)s.dx2, (double)s.y2, half2, sc2, s.rev != 0, s.flip2 != 0,
+                                nearSlice, dyn);
                             if (jumpPen2 > 0) addTight(jumpPen2);
                         }
                     }
@@ -1762,7 +1884,8 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                         } else if (kid.s.mode == 0 || kid.s.mode == 2 || kid.s.mode == 5) {
                             const double sc = std::max(1.0, (double)((s.dx > 0.f) ? s.dx : 1.298f) / 1.298);
                             const int jumpPen = groundJumpTimingPenalty(
-                                near, slps, pads, kx, ky, half, sc, kid.s.rev != 0, kid.s.flip != 0);
+                                near, slps, pads, kx, ky, half, sc, kid.s.rev != 0, kid.s.flip != 0,
+                                nearSlice, dyn);
                             if (jumpPen > 0) addTight(jumpPen);
                         }
                     }
@@ -1783,37 +1906,18 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                     }
 
                     // 9. Avoid Skipping Intended Portals (Soft Penalty, Fake-Portal Safe):
-                    //    - Penalizes dodging around nearby mode/gravity/size/dual/mirror/speed portals when crossing
-                    //      their x-center (`p->cx`), while NEVER killing the branch (`DIE_AS` is never used).
+                    //    - Penalizes dodging around nearby state-changing mode/gravity/size/dual/teleport/speed
+                    //      portals when crossing their x-center (`p->cx`), while NEVER killing the branch.
                     //    - Combined with `bandClass() == true` for `g_solveProfile == 3`, both the portal-taking
                     //      branch and the portal-skipping branch stay alive in separate cap classes:
-                    //      * On normal levels, taking the intended portal has 0 penalty and wins cleanly.
-                    //      * On fake-portal levels (like Portel where touching a portal kills you), the portal-taking
+                    //      * On normal levels (e.g. Deadlocked), taking the intended portal has 0 penalty and wins cleanly.
+                    //      * On fake-portal levels (e.g. Portel where touching a portal kills you), the portal-taking
                     //        branch dies to the trap and the portal-dodging branch survives and clears the level!
-                    if (kid.s.frame == 0) {
-                        const double sx0 = (double)s.xAbs;
-                        const double xMin = std::min(sx0, kx);
-                        const double xMax = std::max(sx0, kx);
-                        for (const Obj* p : ports) {
-                            if (p->cx <= xMin || p->cx > xMax) continue;
-                            const int pt = p->type;
-                            // Mode (1,4,5,6,30,36,42), Gravity (3,40,45), Size (7,8), Mirror (17,18), Dual (31), Teleport (41)
-                            if (pt == 1 || pt == 3 || pt == 4 || pt == 5 || pt == 6 || pt == 7 || pt == 8
-                                || pt == 17 || pt == 18 || pt == 30 || pt == 31 || pt == 36 || pt == 40
-                                || pt == 41 || pt == 42 || pt == 45) {
-                                const double gapY = std::fabs(ky - p->cy) - (p->hh + half);
-                                if (gapY > 0.0 && gapY < 135.0) {
-                                    addTight(95);
-                                }
-                            }
-                        }
-                        for (const Obj* sp : env.spds) {
-                            if (sp->cx <= xMin || sp->cx > xMax) continue;
-                            const double gapY = std::fabs(ky - sp->cy) - (sp->hh + half);
-                            if (gapY > 0.0 && gapY < 135.0) {
-                                addTight(85);
-                            }
-                        }
+                    if (const int portPen = humanPortalSkipPenalty(s, kid.s, ports, env.spds, half); portPen > 0) {
+                        addTight(portPen);
+                    }
+                    if (const int spamPen = humanWavePortalSpamPenalty(s, kid.s, input, ports, half); spamPen > 0) {
+                        addTight(spamPen);
                     }
                 } else if (g_solveProfile == 4) { // Centerline: true corridor centering for all flying modes + clearance
                     if (isFlying && kid.s.frame == 0) {

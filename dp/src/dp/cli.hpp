@@ -7447,6 +7447,7 @@ inline int cliMainOnce(int argc, char** argv) {
         init.action = a2;
         init.action2 = a1;
         init.held = (g_startAct2 >= 0) ? (uint8_t)g_startAct2 : (uint8_t)0;   // the searched body's own hold; the ghost's is the levels file's
+        if (startStateLoaded) g_planPrevHeld = (int)init.held;
         std::printf("swapbodies: the second player is the searched body (y=%.3f vy=%.3f flip=%d mode=%d), the first the ghost (y2=%.3f)\n",
                     (double)init.y, (double)init.vy, (int)init.flip, (int)init.mode, (double)init.y2);
     }
@@ -10394,6 +10395,34 @@ inline int cliMainBody(int argc, char** argv) {
 // merged into the call's `--out`, one `input=<press>,<mask>` line per tick that changes either body's button, and the outcome the caller reads is the
 // worse of the two searches'. Two bodies that share nothing but the clock (a level with no triggers; the speed portals count) are solved this way
 // where a joint search would have the product of their reachable sets for a frontier.
+/// Merge Pass 1 (`e1`) and Pass 2 (`e2`) per-body edges into combined 2-bit masks,
+/// starting from each player's held state at `t0` (`startHeld1`, `startHeld2`).
+inline std::vector<std::pair<long long, int>> mergeTwoBodyEdges(
+    const std::vector<std::pair<long long, int>>& e1,
+    const std::vector<std::pair<long long, int>>& e2,
+    int startHeld1,
+    int startHeld2) {
+    struct Ev { long long t; int bit; int lvl; };
+    std::vector<Ev> ev;
+    ev.reserve(e1.size() + e2.size());
+    for (const auto& e : e1) ev.push_back({e.first, 1, e.second & 1});
+    for (const auto& e : e2) ev.push_back({e.first, 2, e.second & 1});
+    std::stable_sort(ev.begin(), ev.end(), [](const Ev& a, const Ev& b) { return a.t < b.t; });
+    std::vector<std::pair<long long, int>> merged;
+    int mask = (startHeld1 ? 1 : 0) | (startHeld2 ? 2 : 0);
+    for (size_t i = 0; i < ev.size(); ++i) {
+        mask = ev[i].lvl ? (mask | ev[i].bit) : (mask & ~ev[i].bit);
+        if (i + 1 < ev.size() && ev[i + 1].t == ev[i].t) continue;
+        merged.emplace_back(ev[i].t, mask);
+    }
+    return merged;
+}
+
+// Run one two-player DP solve across the two passes: the first body's search, then the second's with `--swapbodies`.
+// `cliMain` starts the second body's pass ONLY when `out.txt` is written against both bodies, then merges them into `out.txt`.
+// Note: when `--swapbodies` is already set, `cliMainBody` runs once.
+// (Previously `cliMain` lived at the bottom because it invokes `cliMainBody` twice.)
+// Merge helper above is pure and unit-tested in dptest_main.cpp.
 inline int cliMain(int argc, char** argv) {
     // --p2switch + --switchtab <file> (switch_model.hpp): the world the search sees has the walls a body's press moves where the schedule of presses puts
     // them -- the table's geometry written as the last --groups layer -- and the schedule is found here, from where the first body's search stops.
@@ -10410,10 +10439,20 @@ inline int cliMain(int argc, char** argv) {
     std::vector<long long> swS;   // the presses of the switch body (edge ticks), ascending
     std::string replayPlan;
     long long swT0 = 0;           // the call's start tick (--start's first field): presses before it are the plan's own, and stay
+    int startHeld1 = 0;
+    int startHeld2 = 0;
     std::vector<long long> swPre;   // --switchpre: every press of the plan the caller holds
     for (int i = 0; i + 1 < argc; ++i) {
         if (!std::strcmp(argv[i], "--replay")) replayPlan = argv[i + 1];
-        if (!std::strcmp(argv[i], "--start")) swT0 = std::atoll(argv[i + 1]);
+        if (!std::strcmp(argv[i], "--start")) {
+            swT0 = std::atoll(argv[i + 1]);
+            double sf[7] = {0, 0, 0, 0, 0, 0, 0};
+            if (std::sscanf(argv[i + 1], "%lf,%lf,%lf,%lf,%lf,%lf,%lf",
+                            &sf[0], &sf[1], &sf[2], &sf[3], &sf[4], &sf[5], &sf[6]) >= 7) {
+                startHeld1 = ((int)sf[6] != 0) ? 1 : 0;
+            }
+        }
+        if (!std::strcmp(argv[i], "--startact2")) startHeld2 = (std::atoi(argv[i + 1]) != 0) ? 1 : 0;
         if (!std::strcmp(argv[i], "--switchpre"))
             for (const char* q = argv[i + 1]; *q; ) {
                 swPre.push_back(std::atoll(q));
@@ -10775,21 +10814,13 @@ inline int cliMain(int argc, char** argv) {
             for (const auto& e : raw) e2.emplace_back(e.first, (e.second >> 1) & 1);
     }
     // merge
-    struct Ev { long long t; int bit; int lvl; };
-    std::vector<Ev> ev;
-    for (const auto& e : e1) ev.push_back({e.first, 1, e.second & 1});
-    for (const auto& e : e2) ev.push_back({e.first, 2, e.second});
-    std::stable_sort(ev.begin(), ev.end(), [](const Ev& a, const Ev& b) { return a.t < b.t; });
-    if (ev.empty()) {
+    const auto merged = mergeTwoBodyEdges(e1, e2, startHeld1, startHeld2);
+    if (merged.empty()) {
         std::remove(outPath.c_str());   // neither body presses: no plan file, as a single body's call writes none
     } else {
         std::ofstream mf(outPath, std::ios::trunc);
-        int mask = 0;
-        for (size_t i = 0; i < ev.size(); ++i) {
-            mask = ev[i].lvl ? (mask | ev[i].bit) : (mask & ~ev[i].bit);
-            if (i + 1 < ev.size() && ev[i + 1].t == ev[i].t) continue;
-            mf << "input=" << ev[i].t << ',' << mask << "\n";
-        }
+        for (const auto& p : merged)
+            mf << "input=" << p.first << ',' << p.second << "\n";
     }
     std::remove((outPath + ".b2").c_str());
     std::remove((outPath + ".b2.trace.csv").c_str());
@@ -10798,7 +10829,7 @@ inline int cliMain(int argc, char** argv) {
     const bool firstWorse = out1.verdict < out2.verdict
                             || (out1.verdict == out2.verdict && out1.deepT >= 0 && (out2.deepT < 0 || out1.deepT < out2.deepT));
     if (rc2 == 0 && firstWorse) g_outcome = out1;
-    std::printf("twobody: merged plan %zu lines -> %s (first body verdict=%d deepT=%lld, second verdict=%d deepT=%lld)\n", ev.size(), outPath.c_str(),
+    std::printf("twobody: merged plan %zu lines -> %s (first body verdict=%d deepT=%lld, second verdict=%d deepT=%lld)\n", merged.size(), outPath.c_str(),
                 (int)out1.verdict, out1.deepT, (int)out2.verdict, out2.deepT);
     std::fflush(stdout);
     return rc2 != 0 ? rc2 : rc;

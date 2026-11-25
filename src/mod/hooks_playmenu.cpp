@@ -89,8 +89,7 @@ struct LevelFacts {
     // Reads the attempt count or keeps items across attempts, and the attempt pin is on
     // (g_attemptOne): solved as its first attempt, a yellow note rather than a red one.
     bool attempts = false;
-    // Two-player mode (header kA10): the second player is planned too, so it is a yellow note (the support is
-    // experimental and a level whose press switches the other player's world is not solved), not a red one.
+    // Two-player mode (header kA10 or m_twoPlayerMode): unsupported, so Play skips the menu like platformer.
     bool twoPlayer = false;
     // Reads the attempt count or keeps items across attempts, but only what is shown depends on it
     // (levelwarn::attemptReachesPlay): no note, a line in the log.
@@ -153,15 +152,16 @@ inline LevelFacts readLevel(GJGameLevel* level, bool mainLevel) {
     const size_t e = s.find_last_not_of(" \t\r\n");
     s = (b == std::string::npos) ? std::string() : s.substr(b, e - b + 1);
     s = gdcompat::rawLevelString(std::move(s));    // the stored, compressed form: gzip ("H4sI") or zlib ("eJ", a level made before 2.0)
-    if (s.empty()) {
-        // No string to read (not expected on a level that can start): fall back to the fields.
+    if (s.empty() || s.find(';') == std::string::npos) {
+        // No readable level string (or decompression left an unparsed blob): fall back to the fields.
         f.platformer = level->isPlatformer();
+        f.twoPlayer = level->m_twoPlayerMode;
         f.coins = level->m_coins;
         return f;
     }
     const std::string_view all(s);
     const size_t head = all.find(';');
-    f.platformer = valueOf(all.substr(0, head), "kA22") == "1";
+    f.platformer = valueOf(all.substr(0, head), "kA22") == "1" || level->isPlatformer();
     for (size_t pos = head; pos != std::string_view::npos;) {
         const size_t end = all.find(';', pos + 1);
         const auto obj = all.substr(pos + 1, end == std::string_view::npos
@@ -181,6 +181,7 @@ inline LevelFacts readLevel(GJGameLevel* level, bool mainLevel) {
         f.unmodelled &= ~levelwarn::kTwoPlayer;
         f.twoPlayer = true;
     }
+    if (level->m_twoPlayerMode) f.twoPlayer = true;
 #ifdef GEODE_IS_WINDOWS
     // With the attempt pin (cfg attemptone, hooks_attempt.cpp) the model is no longer blind to such
     // a level: every attempt is its first. What it still cannot do -- a level that opens only after
@@ -755,7 +756,6 @@ protected:
     cocos2d::CCLabelBMFont* m_redNote = nullptr;
     cocos2d::CCLabelBMFont* m_yellowNote = nullptr;
     cocos2d::CCLabelBMFont* m_attemptNote = nullptr;
-    cocos2d::CCLabelBMFont* m_twoNote = nullptr;
     cocos2d::CCLabelBMFont* m_versionNote = nullptr;
     // ONE line for everything Options changed (Avoid glitches, no section search, another search), red if
     // the search is an experiment and yellow otherwise, with an (i) button for what each costs.
@@ -812,8 +812,7 @@ protected:
     int noteCount() const {
         const int unsolved = (m_facts.unmodelled ? 1 : 0)
                              + (m_facts.newer && !m_facts.official ? 1 : 0)
-                             + (m_facts.attempts ? 1 : 0)
-                             + (m_facts.twoPlayer ? 1 : 0);
+                             + (m_facts.attempts ? 1 : 0);
         const int solved = (!olderSolve(false).empty()
                             || (m_facts.coins > 0 && !olderSolve(true).empty())) ? 1 : 0;
         // ...and one row kept for the line about what Options changed, which comes and goes with the
@@ -962,10 +961,6 @@ protected:
                                  "first attempt, so a level that opens only after dying will not "
                                  "be solved.",
                                  kWarnYellow, "attempt-note"_spr);
-        m_twoNote = makeNote("A two-player level: both players are planned (experimental), and a "
-                             "level where one player's press switches the other's world will not "
-                             "be solved.",
-                             kWarnYellow, "two-player-note"_spr);
         // A level already solved needs neither; solving it again with another version than the one
         // that did may still fail, and that is said instead (refresh fills it in).
         m_versionNote = makeNote("", kWarnYellow, "solved-version-note"_spr);
@@ -1118,7 +1113,6 @@ protected:
               std::pair{m_versionNote, !older.empty()},
               std::pair{m_yellowNote, !solved && m_facts.newer && !m_facts.official},
               std::pair{m_attemptNote, !solved && m_facts.attempts},
-              std::pair{m_twoNote, !solved && m_facts.twoPlayer},
               std::pair{m_redNote, !solved && m_facts.unmodelled != 0}}) {
             label->setVisible(bot && show);
             if (bot && show) {
@@ -1207,7 +1201,8 @@ protected:
             plan,
             outFilename,
             outError,
-            static_cast<int>(Mod::get()->getSettingValue<int64_t>("export-frame-offset"))
+            static_cast<int>(Mod::get()->getSettingValue<int64_t>("export-frame-offset")),
+            m_coins
         );
 
         if (exported) {
@@ -1311,7 +1306,13 @@ protected:
 template <class Layer>
 bool open(Layer* layer, GJGameLevel* level, CCObject* sender, bool mainLevel) {
     const LevelFacts facts = readLevel(level, mainLevel);
-    if (facts.platformer) return false;
+    if (facts.platformer || facts.twoPlayer) {
+        log::info("play menu: lv{} skipped ({})", levelKeyId(level),
+                  facts.platformer && facts.twoPlayer ? "platformer, two-player"
+                  : facts.platformer                  ? "platformer"
+                                                      : "two-player");
+        return false;
+    }
     // What the notes were decided from, so a note can be traced back to the objects behind it.
     log::info("play menu: lv{} checked: not modelled: {}; objects from 2.0 on: {}{}{}; random "
               "numbers: {}; changes by attempt (taken as the first): {}; changes by attempt in what "
@@ -1464,23 +1465,35 @@ inline Kind kindOf(CCMenuItemSpriteExtra* it, cocos2d::CCNode** layerOut) {
 // Whether the game would start a level from this press at all (the early-outs of each onPlay, as the hooks above test them), and
 // the menu opening if it would.
 inline bool canOpen(Kind k, cocos2d::CCNode* layer) {
+    GJGameLevel* level = nullptr;
+    bool mainLevel = false;
     switch (k) {
         case Kind::Info: {
             auto* li = static_cast<LevelInfoLayer*>(layer);
-            return !li->m_isBusy && li->m_enterTransitionFinished && li->m_level && !li->shouldDownloadLevel();
+            if (li->m_isBusy || !li->m_enterTransitionFinished || !li->m_level || li->shouldDownloadLevel())
+                return false;
+            level = li->m_level;
+            break;
         }
         case Kind::Page: {
             auto* lp = static_cast<LevelPage*>(layer);
             const int id = lp->m_level ? lp->m_level->m_levelID.value() : -1;
             const bool locked = lp->m_level && lp->m_level->m_requiredCoins > GameStatsManager::sharedState()->getStat("8");
-            return !lp->m_isBusy && id > 0 && !locked;
+            if (lp->m_isBusy || id <= 0 || locked) return false;
+            level = lp->m_level;
+            mainLevel = true;
+            break;
         }
         case Kind::Edit: {
             auto* el = static_cast<EditLevelLayer*>(layer);
-            return !el->m_exiting && el->m_level;
+            if (el->m_exiting || !el->m_level) return false;
+            level = el->m_level;
+            break;
         }
         default: return false;
     }
+    const auto facts = playmenu::readLevel(level, mainLevel);
+    return !facts.platformer && !facts.twoPlayer;
 }
 inline bool open(Kind k, cocos2d::CCNode* layer, CCMenuItemSpriteExtra* it) {
     if (!canOpen(k, layer)) return false;

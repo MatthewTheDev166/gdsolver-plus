@@ -549,11 +549,89 @@ inline bool padTightHere(const std::vector<const Obj*>& pads,
 //   2. Obstacle / Drop-off distance: penalizes jumping too early (> 42 px ahead) or pixel-scraping (< 8 px ahead).
 //   3. Jump pads on ground: enforces safe early takeoff (~34 px ahead) preventing late takeoffs that graze pads.
 //   4. Deterministic safe human variation: gently centers jumps with natural variation.
+// Extend a platform's forward edge beyond `near` across static/dynamic solids up to `limitX`
+// so drop-off penalties see true gaps up to full jump lookahead without shrinking to `near`'s border.
+inline double extendPlatformFwdEdge(const XSlice* nearSlice,
+                                    const Dynamics* dyn,
+                                    double fwdEdge, double contactY,
+                                    double limitX, bool rev, bool flip) {
+    auto matchSurface = [&](const Obj& o) -> bool {
+        if (o.type != 0 || o.slope || o.oriented) return false;
+        const double oSurfaceY = (!flip) ? (o.cy + o.hh) : (o.cy - o.hh);
+        return std::fabs(oSurfaceY - contactY) <= 2.5;
+    };
+    auto tryExtend = [&](const Obj& o) -> bool {
+        const double oLeft = o.cx - o.hw;
+        const double oRight = o.cx + o.hw;
+        if (!rev) {
+            if (oLeft <= fwdEdge + 2.0 && oRight > fwdEdge) {
+                fwdEdge = oRight;
+                return true;
+            }
+        } else {
+            if (oRight >= fwdEdge - 2.0 && oLeft < fwdEdge) {
+                fwdEdge = oLeft;
+                return true;
+            }
+        }
+        return false;
+    };
+
+    std::vector<const Obj*> dynCands;
+    if (dyn != nullptr && !dyn->objs.empty()) {
+        const double xMin = !rev ? (fwdEdge - 2.0) : (limitX - 2.0);
+        const double xMax = !rev ? (limitX + 2.0) : (fwdEdge + 2.0);
+        dyn->collect(Dynamics::NEAR, xMin, xMax, dynCands);
+    }
+
+    size_t loIdx = 0, hiIdx = 0;
+    if (nearSlice != nullptr && !nearSlice->v.empty()) {
+        const auto& v = nearSlice->v;
+        const double cxLo = (!rev ? fwdEdge : limitX) - kWideScanHw - 2.0;
+        const double cxHi = (!rev ? limitX : fwdEdge) + kWideScanHw + 2.0;
+        loIdx = (size_t)(std::lower_bound(v.begin(), v.end(), cxLo,
+                                          [](const Obj& o, double x) { return o.cx < x; }) - v.begin());
+        hiIdx = (size_t)(std::upper_bound(v.begin() + (ptrdiff_t)loIdx, v.end(), cxHi,
+                                          [](double x, const Obj& o) { return x < o.cx; }) - v.begin());
+    }
+
+    int iters = 0;
+    bool extended = true;
+    while (extended && ((!rev) ? (fwdEdge < limitX) : (fwdEdge > limitX)) && ++iters < 64) {
+        extended = false;
+        if (nearSlice != nullptr) {
+            const auto& v = nearSlice->v;
+            if (!rev) {
+                for (size_t i = loIdx; i < hiIdx; ++i) {
+                    if (v[i].cx - kWideScanHw > fwdEdge + 2.0) break;
+                    if (matchSurface(v[i]) && tryExtend(v[i])) extended = true;
+                }
+            } else {
+                for (size_t i = hiIdx; i > loIdx; --i) {
+                    const Obj& o = v[i - 1];
+                    if (o.cx + kWideScanHw < fwdEdge - 2.0) break;
+                    if (matchSurface(o) && tryExtend(o)) extended = true;
+                }
+            }
+            for (size_t wi : nearSlice->wide) {
+                const Obj& o = v[wi];
+                if (matchSurface(o) && tryExtend(o)) extended = true;
+            }
+        }
+        for (const Obj* o : dynCands) {
+            if (matchSurface(*o) && tryExtend(*o)) extended = true;
+        }
+    }
+    return fwdEdge;
+}
+
 inline int groundJumpTimingPenalty(const std::vector<const Obj*>& near,
                                    const std::vector<const Obj*>& slps,
                                    const std::vector<const Obj*>& pads,
                                    double px, double py, double half, double sc,
-                                   bool rev, bool flip) {
+                                   bool rev, bool flip,
+                                   const XSlice* nearSlice = nullptr,
+                                   const Dynamics* dyn = nullptr) {
     int pen = 0;
     const double maxLookahead = 110.0 * sc;
     const double frontX = (!rev) ? (px + half) : (px - half);
@@ -574,6 +652,7 @@ inline int groundJumpTimingPenalty(const std::vector<const Obj*>& near,
         }
     }
 
+    const double gapLookahead = 220.0 * sc;
     double edgeDist = 1e9;
     if (plat != nullptr) {
         // Trace forward and backward edges across any adjacent matching solids
@@ -581,7 +660,7 @@ inline int groundJumpTimingPenalty(const std::vector<const Obj*>& near,
         double backEdge = (!rev) ? (plat->cx - plat->hw) : (plat->cx + plat->hw);
         int iters = 0;
         bool extended = true;
-        while (extended && ++iters < 16) {
+        while (extended && ++iters < 32) {
             extended = false;
             for (const Obj* o : near) {
                 if (o->type != 0 || o->slope || o->oriented) continue;
@@ -610,6 +689,14 @@ inline int groundJumpTimingPenalty(const std::vector<const Obj*>& near,
                         extended = true;
                     }
                 }
+            }
+        }
+
+        if (nearSlice != nullptr || dyn != nullptr) {
+            const double curEdgeDist = (!rev) ? (fwdEdge - px) : (px - fwdEdge);
+            if (curEdgeDist < gapLookahead) {
+                const double limitX = (!rev) ? (px + gapLookahead) : (px - gapLookahead);
+                fwdEdge = extendPlatformFwdEdge(nearSlice, dyn, fwdEdge, contactY, limitX, rev, flip);
             }
         }
 
@@ -660,7 +747,7 @@ inline int groundJumpTimingPenalty(const std::vector<const Obj*>& near,
         pen += (int)std::lround(diff * diff * 0.025);
     }
     // C. Drop-off / Gap at the edge of the platform (no obstacle on platform)
-    else if (plat != nullptr && edgeDist < 60.0 * sc) {
+    else if (plat != nullptr && edgeDist < gapLookahead) {
         const uint32_t hash = ((uint32_t)std::floor(std::fabs(px) * 0.1) * 2654435761u);
         const double hashOffset = (double)(hash % 7) - 3.0; // [-3.0, +3.0] px
         // Natural human gap takeoff: center is ~14-20 px before the platform edge

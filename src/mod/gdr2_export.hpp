@@ -35,7 +35,8 @@ inline bool exportGdr2(const std::filesystem::path& exportDir,
                        const std::vector<p1::InputCmd>& plan,
                        std::string& outFilename,
                        std::string& outError,
-                       int frameOffset = 0) {
+                       int frameOffset = 0,
+                       bool withCoins = false) {
     if (plan.empty()) {
         outError = "Plan has no inputs";
         return false;
@@ -45,7 +46,7 @@ inline bool exportGdr2(const std::filesystem::path& exportDir,
     if (safeName.empty()) {
         safeName = "level_" + std::to_string(levelId);
     }
-    outFilename = safeName + "-macro.gdr2";
+    outFilename = safeName + (withCoins ? "-coins-macro.gdr2" : "-macro.gdr2");
 
     std::error_code ec;
     std::filesystem::create_directories(exportDir, ec);

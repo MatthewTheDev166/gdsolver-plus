@@ -21,6 +21,15 @@ namespace {
 using namespace gdoff;
 using cocos2d::CCPoint;
 
+template <class G> constexpr std::size_t stateUnkBool10Off() {
+    if constexpr (requires { &G::m_isFlipped; }) return offsetof(G, m_isFlipped);
+    else return offsetof(G, m_unkBool10);
+}
+template <class G> constexpr std::size_t stateLevelFlipOff() {
+    if constexpr (requires { &G::m_levelFlipProgress; }) return offsetof(G, m_levelFlipProgress);
+    else return offsetof(G, m_levelFlipping);
+}
+
 constexpr std::size_t kGameState = offsetof(GJBaseGameLayer, m_gameState);
 #define STATE(m) (kGameState + offsetof(GJGameState, m))
 
@@ -33,8 +42,8 @@ static_assert(kLayerFreeMode == STATE(m_isFreeMode));
 static_assert(kLayerCurrentChannel == STATE(m_currentChannel));
 static_assert(kLayerSpawnChannel0 == STATE(m_spawnChannelRelated0));
 static_assert(kLayerSpawnChannel1 == STATE(m_spawnChannelRelated1));
-static_assert(kLayerUnkBool10 == STATE(m_unkBool10));
-static_assert(kLayerLevelFlipping == STATE(m_levelFlipping));
+static_assert(kLayerUnkBool10 == kGameState + stateUnkBool10Off<GJGameState>());
+static_assert(kLayerLevelFlipping == kGameState + stateLevelFlipOff<GJGameState>());
 static_assert(kLayerDualMode == STATE(m_isDualMode));
 static_assert(kLayerTargetGroupsArray == offsetof(GJBaseGameLayer, m_targetGroupsArray));
 static_assert(kLayerObjectParent == offsetof(GJBaseGameLayer, m_objectParent));

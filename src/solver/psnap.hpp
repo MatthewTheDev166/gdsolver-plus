@@ -149,11 +149,19 @@ struct Mem { const char* name; size_t off; size_t size; };
 // board, real physical quantities such as `double m_yVelocityBeforeSlope` were
 // dropped too (all 49 doubles), the whitelist shrank to 756/3,144 bytes and the
 // search's solutions stopped reproducing.
+#define PSNAP_MEM_ALT(T, n, o) \
+    ([]<class C>() -> Mem { \
+        if constexpr (requires { &C::n; }) return {#n, offsetof(C, n), sizeof(C::n)}; \
+        else return {#o, offsetof(C, o), sizeof(C::o)}; \
+    }.template operator()<T>())
+
 inline const std::vector<Mem>& scalars() {
     static std::vector<Mem> tbl = [] {
         std::vector<Mem> m;
 #define PO_SCALAR(n) m.push_back({#n, offsetof(PlayerObject, n), sizeof(PlayerObject::n)});
+#define PO_SCALAR_ALT(n, o) m.push_back(PSNAP_MEM_ALT(PlayerObject, n, o));
 #define GO_SCALAR(n) m.push_back({#n, offsetof(GameObject, n), sizeof(GameObject::n)});
+#define GO_SCALAR_ALT(n, o) m.push_back(PSNAP_MEM_ALT(GameObject, n, o));
 #define PO_OPAQUE(n)
 #define GO_OPAQUE(n)
 #define GB_SCALAR(n)
@@ -162,7 +170,9 @@ inline const std::vector<Mem>& scalars() {
 #define EM_OPAQUE(n)
 #include "../po_members.inc"
 #undef PO_SCALAR
+#undef PO_SCALAR_ALT
 #undef GO_SCALAR
+#undef GO_SCALAR_ALT
 #undef PO_OPAQUE
 #undef GO_OPAQUE
 #undef GB_SCALAR
@@ -310,8 +320,10 @@ inline const std::vector<Mem>& goScalars() {
     static std::vector<Mem> tbl = [] {
         std::vector<Mem> m;
 #define PO_SCALAR(n)
+#define PO_SCALAR_ALT(n, o)
 #define PO_OPAQUE(n)
 #define GO_SCALAR(n) m.push_back({#n, offsetof(GameObject, n), sizeof(GameObject::n)});
+#define GO_SCALAR_ALT(n, o) m.push_back(PSNAP_MEM_ALT(GameObject, n, o));
 #define GO_OPAQUE(n)
 #define GB_SCALAR(n)
 #define GB_OPAQUE(n)
@@ -319,8 +331,10 @@ inline const std::vector<Mem>& goScalars() {
 #define EM_OPAQUE(n)
 #include "../po_members.inc"
 #undef PO_SCALAR
+#undef PO_SCALAR_ALT
 #undef PO_OPAQUE
 #undef GO_SCALAR
+#undef GO_SCALAR_ALT
 #undef GO_OPAQUE
 #undef GB_SCALAR
 #undef GB_OPAQUE
@@ -337,8 +351,10 @@ inline const std::vector<Mem>& gbScalars() {
     static std::vector<Mem> tbl = [] {
         std::vector<Mem> m;
 #define PO_SCALAR(n)
+#define PO_SCALAR_ALT(n, o)
 #define PO_OPAQUE(n)
 #define GO_SCALAR(n)
+#define GO_SCALAR_ALT(n, o)
 #define GO_OPAQUE(n)
 #define GB_SCALAR(n) m.push_back({#n, offsetof(GJBaseGameLayer, n), sizeof(GJBaseGameLayer::n)});
 #define GB_OPAQUE(n)
@@ -346,8 +362,10 @@ inline const std::vector<Mem>& gbScalars() {
 #define EM_OPAQUE(n)
 #include "../po_members.inc"
 #undef PO_SCALAR
+#undef PO_SCALAR_ALT
 #undef PO_OPAQUE
 #undef GO_SCALAR
+#undef GO_SCALAR_ALT
 #undef GO_OPAQUE
 #undef GB_SCALAR
 #undef GB_OPAQUE

@@ -511,6 +511,7 @@ inline std::string defaultsProfile() {
     put(s, "g_waveCentre", g_waveCentre);
     put(s, "g_waveTidy", g_waveTidy);
     put(s, "g_waveToggle", g_waveToggle);
+    put(s, "g_solveProfile", g_solveProfile);
     put(s, "g_startEdge", g_startEdge);
     put(s, "g_glitchEmbed", g_glitchEmbed);
     put(s, "g_glitchDeco", g_glitchDeco);
@@ -531,6 +532,7 @@ inline std::string defaultsProfile() {
     put(s, "g_twinAudit", g_twinAudit);
     put(s, "g_minPulse", g_minPulse);
     put(s, "g_wavePulse", g_wavePulse);
+    put(s, "g_flyPulse", g_flyPulse);
     put(s, "g_inputGrid", g_inputGrid);
     put(s, "g_coinProbeMaxX", g_coinProbeMaxX);
     put(s, "g_trigMaxKeptX", g_trigMaxKeptX);

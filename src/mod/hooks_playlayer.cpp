@@ -639,18 +639,29 @@ class $modify(PlayLayer) {
                 if (!s_names) {
                     s_names = true;
                     char b[200];
+#define RD_ALT(kind, T, n, o) \
+    ([&]<class C>() { \
+        if constexpr (requires { &C::n; }) { snprintf(b, sizeof(b), "rdmem: %s %s %zu %zu", kind, #n, offsetof(C, n), sizeof(C::n)); } \
+        else { snprintf(b, sizeof(b), "rdmem: %s %s %zu %zu", kind, #o, offsetof(C, o), sizeof(C::o)); } \
+        writeResult(b); \
+    }.template operator()<T>())
 #define PO_SCALAR(n) snprintf(b, sizeof(b), "rdmem: P %s %zu %zu", #n, offsetof(PlayerObject, n), sizeof(PlayerObject::n)); writeResult(b);
+#define PO_SCALAR_ALT(n, o) RD_ALT("P", PlayerObject, n, o);
 #define PO_OPAQUE(n) PO_SCALAR(n)
 #define GO_SCALAR(n) snprintf(b, sizeof(b), "rdmem: O %s %zu %zu", #n, offsetof(GameObject, n), sizeof(GameObject::n)); writeResult(b);
+#define GO_SCALAR_ALT(n, o) RD_ALT("O", GameObject, n, o);
 #define GO_OPAQUE(n) GO_SCALAR(n)
 #define GB_SCALAR(n) snprintf(b, sizeof(b), "rdmem: L %s %zu %zu", #n, offsetof(GJBaseGameLayer, n), sizeof(GJBaseGameLayer::n)); writeResult(b);
 #define GB_OPAQUE(n) GB_SCALAR(n)
 #define EM_SCALAR(n)
 #define EM_OPAQUE(n)
 #include "../po_members.inc"
+#undef RD_ALT
 #undef PO_SCALAR
+#undef PO_SCALAR_ALT
 #undef PO_OPAQUE
 #undef GO_SCALAR
+#undef GO_SCALAR_ALT
 #undef GO_OPAQUE
 #undef GB_SCALAR
 #undef GB_OPAQUE
@@ -725,8 +736,11 @@ class $modify(PlayLayer) {
             // Guard against a leftover hold: if the previous attempt ends while pressed, the
             // button carries over into tick 0 of the next attempt and it jumps continuously
             // from the very start (breaking reproduction of the same plan)
+            const bool twoPlayerLevel = (this->m_levelSettings && this->m_levelSettings->m_twoPlayerMode)
+                                     || (this->m_level && this->m_level->m_twoPlayerMode);
             g_injecting = true;
             this->handleButton(false, 1, true);
+            if (twoPlayerLevel) this->handleButton(false, 1, false);
             g_injecting = false;
         }
         // An attempt sequence's prelude attempts do not count against the cap: it is the clearing attempts' budget.

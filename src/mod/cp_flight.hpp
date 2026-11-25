@@ -70,6 +70,11 @@ template <class G> inline CamMem cameraLastPoint() {
 }
 inline const std::vector<CamMem>& gameStateScalars() {
 #define CPF_GS(m) CamMem{offsetof(GJGameState, m), sizeof(GJGameState::m)}
+#define CPF_GS_ALT(n, o) \
+    ([]<class G>() -> CamMem { \
+        if constexpr (requires { &G::n; }) return CamMem{offsetof(G, n), sizeof(G::n)}; \
+        else return CamMem{offsetof(G, o), sizeof(G::o)}; \
+    }.template operator()<GJGameState>())
     static const std::vector<CamMem> v = {
         CPF_GS(m_cameraZoom), CPF_GS(m_targetCameraZoom), CPF_GS(m_cameraOffset),
         CPF_GS(m_unkPoint1), CPF_GS(m_unkPoint2), CPF_GS(m_unkPoint3), cameraDeltaPoint<GJGameState>(),
@@ -82,13 +87,17 @@ inline const std::vector<CamMem>& gameStateScalars() {
         CPF_GS(m_unkPoint29), CPF_GS(m_unkBool1), CPF_GS(m_unkInt1), CPF_GS(m_unkBool2),
         CPF_GS(m_unkInt2), CPF_GS(m_unkBool3), CPF_GS(m_unkPoint30), CPF_GS(m_middleGroundOffsetY),
         CPF_GS(m_unkInt3), CPF_GS(m_unkInt4), CPF_GS(m_unkBool4), CPF_GS(m_unkBool5),
-        CPF_GS(m_unkFloat2), CPF_GS(m_unkFloat3), CPF_GS(m_unkInt5), CPF_GS(m_unkInt6),
-        CPF_GS(m_unkInt7), CPF_GS(m_unkInt8), CPF_GS(m_unkInt9), CPF_GS(m_unkInt10),
-        CPF_GS(m_unkInt11), CPF_GS(m_unkFloat4), CPF_GS(m_unkUint1), CPF_GS(m_portalY),
+        CPF_GS_ALT(m_cameraPadding, m_unkFloat2), CPF_GS_ALT(m_cameraEasing, m_unkFloat3),
+        CPF_GS(m_unkInt5), CPF_GS(m_unkInt6), CPF_GS(m_unkInt7), CPF_GS(m_unkInt8),
+        CPF_GS(m_unkInt9), CPF_GS(m_unkInt10),
+        CPF_GS_ALT(m_lastModeHeight, m_unkInt11), CPF_GS_ALT(m_lastCameraZoom, m_unkFloat4),
+        CPF_GS(m_unkUint1), CPF_GS(m_portalY),
         CPF_GS(m_unkBool6), CPF_GS(m_gravityRelated), CPF_GS(m_unkInt12), CPF_GS(m_unkInt13),
         CPF_GS(m_unkInt14), CPF_GS(m_unkInt15), CPF_GS(m_unkBool7), CPF_GS(m_isFreeMode),
-        CPF_GS(m_unkBool9), CPF_GS(m_unkFloat5), CPF_GS(m_unkFloat6), CPF_GS(m_unkFloat7),
-        CPF_GS(m_unkFloat8), CPF_GS(m_cameraAngle), CPF_GS(m_targetCameraAngle),
+        CPF_GS_ALT(m_disableCameraGridSnap, m_unkBool9),
+        CPF_GS_ALT(m_backgroundSpeedX, m_unkFloat5), CPF_GS_ALT(m_backgroundSpeedY, m_unkFloat6),
+        CPF_GS_ALT(m_middlegroundSpeedX, m_unkFloat7), CPF_GS_ALT(m_middlegroundSpeedY, m_unkFloat8),
+        CPF_GS_ALT(m_cameraAngle, m_cameraAngle), CPF_GS(m_targetCameraAngle),
         CPF_GS(m_playerStreakBlend), CPF_GS(m_timeWarp), CPF_GS(m_queuedTimeWarp),
         CPF_GS(m_timeWarpRelated), CPF_GS(m_currentChannel), CPF_GS(m_rotateChannel),
         CPF_GS(m_totalTime), CPF_GS(m_levelTime), CPF_GS(m_unkDouble3), CPF_GS(m_commandIndex),
@@ -96,20 +105,33 @@ inline const std::vector<CamMem>& gameStateScalars() {
         CPF_GS(m_unkUint6), CPF_GS(m_unkUint7), CPF_GS(m_unkUint8),
         // two objects of the same layer, which a restore of the loop never re-creates
         CPF_GS(m_lastActivatedPortal1), CPF_GS(m_lastActivatedPortal2),
-        CPF_GS(m_cameraPosition), CPF_GS(m_unkBool10), CPF_GS(m_levelFlipping), CPF_GS(m_unkBool11),
-        CPF_GS(m_unkBool12), CPF_GS(m_isDualMode), CPF_GS(m_unkFloat9), CPF_GS(m_cameraEdgeValue0),
-        CPF_GS(m_cameraEdgeValue1), CPF_GS(m_cameraEdgeValue2), CPF_GS(m_cameraEdgeValue3),
+        CPF_GS(m_cameraPosition),
+        CPF_GS_ALT(m_isFlipped, m_unkBool10),
+        CPF_GS_ALT(m_levelFlipProgress, m_levelFlipping),
+        CPF_GS_ALT(m_inSecondHalfOfFlipAnimation, m_unkBool11),
+        CPF_GS_ALT(m_isFlipping, m_unkBool12),
+        CPF_GS(m_isDualMode), CPF_GS_ALT(m_dualAnimationProgress, m_unkFloat9),
+        CPF_GS(m_cameraEdgeValue0), CPF_GS(m_cameraEdgeValue1),
+        CPF_GS(m_cameraEdgeValue2), CPF_GS(m_cameraEdgeValue3),
         CPF_GS(m_unkUint10), CPF_GS(m_unkUint11), CPF_GS(m_unkUint12), CPF_GS(m_cameraStepDiff),
-        CPF_GS(m_unkFloat10), CPF_GS(m_timeModRelated), CPF_GS(m_timeModRelated2),
+        CPF_GS_ALT(m_backgroundWidth, m_unkFloat10),
+        CPF_GS(m_timeModRelated), CPF_GS(m_timeModRelated2),
         CPF_GS(m_unkUint13), CPF_GS(m_unkPoint32), cameraLastPoint<GJGameState>(), CPF_GS(m_unkBool20),
-        CPF_GS(m_unkBool21), CPF_GS(m_unkBool22), CPF_GS(m_unkUint14), CPF_GS(m_unkBool26),
+        CPF_GS(m_unkBool21), CPF_GS_ALT(m_audioOnDeath, m_unkBool22),
+        CPF_GS_ALT(m_respawnTime, m_unkUint14), CPF_GS_ALT(m_noDeathSFX, m_unkBool26),
         CPF_GS(m_cameraShakeEnabled), CPF_GS(m_cameraShakeDuration), CPF_GS(m_cameraShakeStrength),
         CPF_GS(m_cameraShakeInterval), CPF_GS(m_lastShakeTime), CPF_GS(m_unkPoint34),
-        CPF_GS(m_dualRelated), CPF_GS(m_unkBool27), CPF_GS(m_unkBool28), CPF_GS(m_unkBool29),
+        CPF_GS(m_dualRelated), CPF_GS(m_unkBool27),
+        CPF_GS_ALT(m_instantExitStaticCameraX, m_unkBool28),
+        CPF_GS_ALT(m_instantExitStaticCameraY, m_unkBool29),
         CPF_GS(m_unkUint17), CPF_GS(m_unkBool30), CPF_GS(m_background), CPF_GS(m_ground),
-        CPF_GS(m_middleground), CPF_GS(m_unkBool31), CPF_GS(m_points), CPF_GS(m_unkBool32),
+        CPF_GS(m_middleground),
+        CPF_GS_ALT(m_unlinkDualGravity, m_unkBool31),
+        CPF_GS(m_points),
+        CPF_GS_ALT(m_hasObtainedPoints, m_unkBool32),
         CPF_GS(m_pauseCounter), CPF_GS(m_pauseBufferTimer),
     };
+#undef CPF_GS_ALT
 #undef CPF_GS
     return v;
 }

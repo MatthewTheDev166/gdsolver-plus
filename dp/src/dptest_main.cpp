@@ -964,10 +964,319 @@ void formulaRecProvenance() {
     check(!with(true, -1, -1, 3000, 2500), "--recprov: unknown attempts on both sides -> not read");
     with(false, -1, -1, -1, 0);
 }
+void twoBodyMergeHeldMask() {
+    using Edges = std::vector<std::pair<long long, int>>;
+    {
+        const auto m = dp::mergeTwoBodyEdges({}, {{50, 1}, {70, 0}}, 1, 0);
+        check(m == (Edges{{50, 3}, {70, 1}}),
+              "2p merge: P1 held across anchor stays pressed (bit 0 = 1) when only P2 emits edges");
+    }
+    {
+        const auto m = dp::mergeTwoBodyEdges({{50, 1}, {80, 0}}, {{60, 0}}, 0, 1);
+        check(m == (Edges{{50, 3}, {60, 1}, {80, 0}}),
+              "2p merge: P2 held across anchor stays pressed (bit 1 = 1) until P2 releases");
+    }
+    {
+        const auto m = dp::mergeTwoBodyEdges({{40, 0}}, {{40, 1}}, 1, 0);
+        check(m == (Edges{{40, 2}}),
+              "2p merge: same-tick P1 release and P2 press combine into one mask line");
+    }
+    {
+        const auto m = dp::mergeTwoBodyEdges({}, {}, 1, 1);
+        check(m.empty(), "2p merge: no edges -> empty plan regardless of initial holds");
+    }
+}
+void humanGapJumpTiming() {
+    auto mkSolid = [](int uid, double cx, double cy) {
+        dp::Obj o{};
+        o.uid = uid;
+        o.type = 0;
+        o.cx = cx;
+        o.cy = cy;
+        o.hw = 15.0;
+        o.hh = 15.0;
+        return o;
+    };
+    const std::vector<const dp::Obj*> noSlps, noPads;
+    const double half = 15.0;
+
+    // 1. Real drop-off ahead (10-block platform [0..300]): early jumps at 60*sc, 90*sc, 140*sc must never
+    // drop to 0 penalty, while natural edge jumps near 17*sc stay near 0 across 1x/2x/3x speeds.
+    {
+        std::vector<dp::Obj> platBlocks;
+        for (int i = 0; i < 10; ++i) platBlocks.push_back(mkSolid(100 + i, 15.0 + 30.0 * i, 15.0));
+        dp::XSlice slice(platBlocks);
+        for (double sc : {1.0, 1.24, 1.5}) {
+            auto evalAt = [&](double edgeDist) {
+                const double px = 300.0 - edgeDist;
+                std::vector<const dp::Obj*> near;
+                for (const auto& o : platBlocks)
+                    if (o.cx - o.hw <= px + 82.0) near.push_back(&o);
+                return dp::groundJumpTimingPenalty(near, noSlps, noPads, px, 45.0, half, sc,
+                                                   false, false, &slice, nullptr);
+            };
+            const int pEdge = evalAt(17.0 * sc);
+            const int pEarly60 = evalAt(60.0 * sc);
+            const int pEarly90 = evalAt(90.0 * sc);
+            const int pEarly140 = evalAt(140.0 * sc);
+            check(pEdge <= 2 && pEarly60 > 50 && pEarly90 > pEarly60 && pEarly140 > pEarly90,
+                  "human gap jump: penalty rises monotonically across 60..140*sc instead of dropping to 0");
+        }
+    }
+
+    // 2. Reverse & inverted gravity: platform extends in reverse [0..360] with near trimmed to [240..360]
+    // and gap at x=0; early jump at edgeDist = 70*sc is still penalized via XSlice extension.
+    {
+        std::vector<dp::Obj> platBlocks;
+        for (int i = 0; i < 12; ++i) platBlocks.push_back(mkSolid(200 + i, 15.0 + 30.0 * i, 150.0));
+        dp::XSlice slice(platBlocks);
+        const double sc = 1.5;
+        const double px = 70.0 * sc; // moving left toward fwdEdge = 0
+        std::vector<const dp::Obj*> near;
+        for (const auto& o : platBlocks)
+            if (o.cx >= px - 70.0 && o.cx <= px + 40.0) near.push_back(&o);
+        const int pEdge = dp::groundJumpTimingPenalty(near, noSlps, noPads, 17.0 * sc, 120.0, half, sc,
+                                                      true, true, &slice, nullptr);
+        const int pEarly = dp::groundJumpTimingPenalty(near, noSlps, noPads, px, 120.0, half, sc,
+                                                       true, true, &slice, nullptr);
+        check(pEdge <= 2 && pEarly > 80,
+              "human gap jump: reverse + flipped gravity extends fwdEdge via XSlice and penalizes early jump");
+    }
+
+    // 3. Continuous flat platform (> 220*sc past px): truncated `near` must NOT invent a false drop-off.
+    {
+        std::vector<dp::Obj> flatBlocks;
+        for (int i = 0; i < 16; ++i) flatBlocks.push_back(mkSolid(300 + i, 15.0 + 30.0 * i, 15.0));
+        dp::XSlice slice(flatBlocks);
+        const double px = 60.0;
+        std::vector<const dp::Obj*> near;
+        for (int i = 0; i < 5; ++i) near.push_back(&flatBlocks[(size_t)i]); // stops at x=150 inside `near`
+        const int pFlat = dp::groundJumpTimingPenalty(near, noSlps, noPads, px, 45.0, half, 1.5,
+                                                      false, false, &slice, nullptr);
+        check(pFlat == 0,
+              "human gap jump: continuous flat platform past 220*sc returns 0 even when near truncates earlier");
+    }
+}
+
+void humanPortalEnforcement() {
+    auto mkPort = [](int uid, int type, double cx, double cy, int id = 0) {
+        dp::Obj o{};
+        o.uid = uid;
+        o.type = type;
+        o.id = id;
+        o.cx = cx;
+        o.cy = cy;
+        o.hw = 17.0;
+        o.hh = 37.5;
+        return o;
+    };
+    const std::vector<const dp::Obj*> noSpds;
+    const std::vector<const dp::Obj*> noPorts;
+    const double waveHalf = dp::playerHalf(4, false);
+
+    // 1. All actual mode/size/gravity/dual/teleport portal types are enforced even past 135 px gapY
+    //    (and Wave/Mini-Wave pays double surcharge so skipping into open sections never wins over normal play).
+    {
+        const int types[] = {3, 4, 5, 6, 16, 17, 18, 19, 23, 24, 26, 27, 28, 33, 41, 42};
+        for (int pt : types) {
+            dp::Obj p = mkPort(100 + pt, pt, 500.0, 200.0);
+            dp::State s{};
+            s.xAbs = 499.0f;
+            s.mode = (pt == 6) ? 4 : 0;   // ensure pt==6 (Cube) changes from Wave; others differ from default 0
+            if (pt == 17) s.mini = 1;
+            if (pt == 4) s.flip = 1;
+            if (pt == 24) s.dual = 1;
+            dp::State kid = s;
+            kid.xAbs = 500.5f;
+            kid.y = 390.0f; // gapY = |390-200| - (37.5+5) = 147.5..157.5 (> old 135 px cutoff)
+            const std::vector<const dp::Obj*> ports{&p};
+            const int pen = dp::humanPortalSkipPenalty(s, kid, ports, noSpds, dp::playerHalf(kid.mode, kid.mini != 0));
+            const int expect = (pt == 6) ? 100000 : 50000;
+            check(pen == expect, "human portal: dodging state-changing portal charges 50k (100k in wave)");
+        }
+
+        // Tall wave room (>340 px away from portal inside active band) is still penalized, not 0!
+        dp::Obj cubePort = mkPort(199, 6, 500.0, 120.0);
+        dp::State sTall{};
+        sTall.xAbs = 499.0f;
+        sTall.mode = 4;
+        sTall.mini = 1;
+        sTall.bandFloor = 0.0f;
+        sTall.bandCeil = 600.0f;
+        dp::State kidTall = sTall;
+        kidTall.xAbs = 500.5f;
+        kidTall.y = 540.0f; // gapY = 420 - 40.5 = 379.5 (> old 340 cutoff)
+        const std::vector<const dp::Obj*> tallPorts{&cubePort};
+        check(dp::humanPortalSkipPenalty(sTall, kidTall, tallPorts, noSpds, dp::playerHalf(4, true)) == 100000,
+              "human portal: tall active band mini-wave skip >340px still charges 100k");
+
+        // Pre-portal rapid spam toggle vertically outside portal corridor is penalized (mini-wave & big-wave),
+        // while lining up inside the portal's vertical span or normal-rate strokes (age >= 12) pay 0.
+        dp::State sPre = sTall;
+        sPre.xAbs = 440.0f;
+        sPre.action = 0;
+        sPre.edgeAge = 2; // rapid burst (< 4 ticks)
+        dp::State kidOutside = sPre;
+        kidOutside.xAbs = 441.5f;
+        kidOutside.y = 260.0f; // outside portal [82.5, 157.5] + half
+        check(dp::humanWavePortalSpamPenalty(sPre, kidOutside, 1, tallPorts, dp::playerHalf(4, true)) > 2400,
+              "human portal: mini-wave rapid toggle outside upcoming portal Y corridor charges spam surcharge");
+
+        dp::State kidInside = sPre;
+        kidInside.xAbs = 441.5f;
+        kidInside.y = 120.0f; // aligned with portal cy=120
+        check(dp::humanWavePortalSpamPenalty(sPre, kidInside, 1, tallPorts, dp::playerHalf(4, true)) == 0,
+              "human portal: toggling aligned inside upcoming portal Y span charges 0");
+
+        dp::State sSlow = sPre;
+        sSlow.edgeAge = 14; // relaxed stroke
+        check(dp::humanWavePortalSpamPenalty(sSlow, kidOutside, 1, tallPorts, dp::playerHalf(4, true)) == 0,
+              "human portal: relaxed wave stroke (edgeAge >= 12) charges 0 pre-portal spam");
+    }
+
+    // 2. Speed portals (type 20, id 200..203/1334) charge +15000 (+30000 in Wave) when skipped cleanly.
+    {
+        dp::Obj sp = mkPort(250, 20, 500.0, 200.0, 202); // 1.3x (2x speed)
+        dp::State s{};
+        s.xAbs = 499.0f;
+        s.dx = 1.298f;
+        s.mode = 4;
+        dp::State kid = s;
+        kid.xAbs = 500.5f;
+        kid.y = 380.0f;
+        const std::vector<const dp::Obj*> spds{&sp};
+        check(dp::humanPortalSkipPenalty(s, kid, noPorts, spds, waveHalf) == 30000,
+              "human portal: dodging speed portal in wave charges +30000");
+
+        kid.spdFired[0] = 250;
+        check(dp::humanPortalSkipPenalty(s, kid, noPorts, spds, waveHalf) == 0,
+              "human portal: speed portal already fired in spdFired charges 0");
+    }
+
+    // 3. Redundant portal (same mode), already-seen portal (portSeen), and teleport-jumped portal charge 0.
+    {
+        dp::Obj cubePort = mkPort(301, 6, 500.0, 200.0);
+        const std::vector<const dp::Obj*> ports{&cubePort};
+        dp::State sCube{};
+        sCube.xAbs = 499.0f;
+        sCube.mode = 0; // already cube
+        dp::State kidCube = sCube;
+        kidCube.xAbs = 500.5f;
+        kidCube.y = 380.0f;
+        check(dp::humanPortalSkipPenalty(sCube, kidCube, ports, noSpds, dp::playerHalf(0, false)) == 0,
+              "human portal: redundant portal (already cube) charges 0");
+
+        dp::State sWave{};
+        sWave.xAbs = 499.0f;
+        sWave.mode = 4;
+        dp::State kidTaken = sWave;
+        kidTaken.xAbs = 500.5f;
+        kidTaken.y = 380.0f;
+        kidTaken.portSeen[0] = 301;
+        check(dp::humanPortalSkipPenalty(sWave, kidTaken, ports, noSpds, waveHalf) == 0,
+              "human portal: portal recorded in portSeen charges 0");
+
+        dp::State kidTp = sWave;
+        kidTp.xAbs = 580.0f; // > 25 px teleport jump across portal
+        kidTp.y = 380.0f;
+        check(dp::humanPortalSkipPenalty(sWave, kidTp, ports, noSpds, waveHalf) == 0,
+              "human portal: teleport jump past portal charges 0");
+    }
+
+    // 4. End-to-end DP comparison: Deadlocked-style Wave->Cube corridor takes the Cube portal cleanly,
+    // while Portel-style lethal fake Cube portal still dodges and survives.
+    {
+        auto objRow = [](int id, int type, double cx, double cy, double w, double h, int uid) {
+            std::ostringstream os;
+            os << id << "," << type << "," << cx << "," << cy << "," << w << "," << h << ",0," << uid << ",0,0\n";
+            return os.str();
+        };
+        auto runScenario = [&](bool fakeTrap, bool miniWave) -> std::pair<bool, int> {
+            std::string csv = std::string(kObjHeader) + "\n";
+            // Wave/Mini-Wave band [30, 300], cube portal (id=12, type=6) at x=200, y=150 (h=75 -> y=[112.5, 187.5]).
+            // Open air above y=187.5 up to 300 allows dodging over the portal by waving/spamming above it.
+            csv += objRow(12, 6, 200.0, 150.0, 34.0, 75.0, 9001);
+            int nextUid = 1000;
+            // Solid floor at y=0..30 (top=30) so Cube lands safely unless fakeTrap blocks the low lane.
+            for (double x = 15.0; x <= 615.0; x += 30.0) {
+                csv += objRow(1, 0, x, 15.0, 30.0, 30.0, nextUid++);
+            }
+            if (fakeTrap) {
+                // Solid wall at x=280 covering y=0..200: a Cube coming out of the portal at y<=187.5
+                // cannot climb above y=200 and crashes, whereas a Wave/Mini-Wave dodging at y=240 clears it.
+                csv += objRow(1, 0, 280.0, 100.0, 30.0, 200.0, 2001);
+            } else if (miniWave) {
+                // Realistic Cube spikes downstream so the Cube path spends normal jump/timing tight,
+                // proving Mini-Wave spam over the portal into open sky cannot outscore entering the portal.
+                csv += objRow(8, 2, 360.0, 45.0, 30.0, 30.0, 2002);
+                csv += objRow(8, 2, 510.0, 45.0, 30.0, 30.0, 2003);
+            }
+            const std::string tag = std::string(fakeTrap ? "fake_" : "intended_") + (miniWave ? "mini" : "big");
+            const std::string lvPath = writeTmp("dptest_human_portal_" + tag + ".csv", csv);
+            const std::string outPath =
+                (std::filesystem::temp_directory_path() / ("dptest_human_portal_" + tag + "_plan.txt")).string();
+            const std::string tracePath = outPath + ".trace.csv";
+            std::remove(outPath.c_str());
+            std::remove(tracePath.c_str());
+
+            const std::string startArg = miniWave ? "0,30,150,0,4,0,0,0,1" : "0,30,150,0,4,0,0";
+            std::vector<std::string> argvStr = {
+                "leveldp", lvPath, "--out", outPath, "--profile", "3",
+                "--start", startArg, "--startband", "30,300"
+            };
+            std::vector<char*> argvPtr;
+            for (std::string& s : argvStr) argvPtr.push_back(s.data());
+
+            const int rc = dp::cliMain((int)argvPtr.size(), argvPtr.data());
+            const bool solved = (rc == 0 && dp::g_outcome.verdict == dp::VerdictSolved);
+            int endMode = -1;
+            {
+                std::ifstream tf(tracePath);
+                std::string ln, lastLn;
+                std::getline(tf, ln); // header
+                while (std::getline(tf, ln)) {
+                    if (!ln.empty()) lastLn = ln;
+                }
+                if (!lastLn.empty()) {
+                    // tick,x,y,vy,mode,...
+                    std::istringstream is(lastLn);
+                    std::string col;
+                    for (int c = 0; c <= 4 && std::getline(is, col, ','); ++c) {
+                        if (c == 4) endMode = std::atoi(col.c_str());
+                    }
+                }
+            }
+            std::remove(outPath.c_str());
+            std::remove(tracePath.c_str());
+            std::remove(lvPath.c_str());
+            return {solved, endMode};
+        };
+
+        const auto intendedBig = runScenario(false, false);
+        check(intendedBig.first && intendedBig.second == 0,
+              "human portal E2E: survivable big-Wave->Cube corridor enters intended Cube portal instead of dodging");
+
+        const auto fakeBig = runScenario(true, false);
+        check(fakeBig.first && fakeBig.second == 4,
+              "human portal E2E: lethal fake Cube portal still dodges as big-Wave and clears level");
+
+        const auto intendedMini = runScenario(false, true);
+        check(intendedMini.first && intendedMini.second == 0,
+              "human portal E2E: survivable Mini-Wave->Cube corridor enters Cube portal instead of spamming past");
+
+        const auto fakeMini = runScenario(true, true);
+        check(fakeMini.first && fakeMini.second == 4,
+              "human portal E2E: lethal fake Cube portal still dodges as Mini-Wave and clears level");
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc > 2 && !std::strcmp(argv[1], "--groups-corpus")) return groupsCorpus(argc, argv);
+    humanGapJumpTiming();
+    humanPortalEnforcement();
     bandSourceRows();
     formulaRecProvenance();
+    twoBodyMergeHeldMask();
     slamBoxIdentity();
     warpFlyShipStep();
     rotBoostDontSlide();

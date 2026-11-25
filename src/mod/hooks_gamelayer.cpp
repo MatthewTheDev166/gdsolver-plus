@@ -5461,6 +5461,15 @@ class $modify(GJBaseGameLayer) {
                     layMinX = std::min(layMinX, px);
                     layMinY = std::min(layMinY, py);
                     layMaxY = std::max(layMaxY, py);
+                    if (g_cfg.solveProfile == PROFILE_HUMAN && branch != parentIn && p && (int)modeIdx(p) == 4) {
+                        const int pAge = (int)g_nodes[(size_t)ni].edgeAge;
+                        const bool miniW = (p->m_vehicleSize < 0.9f);
+                        int wAdd = 0;
+                        if (pAge < 4)       wAdd = miniW ? 120 : 80;
+                        else if (pAge < 8)  wAdd = miniW ? 65 : 45;
+                        else if (pAge < 14) wAdd = miniW ? 26 : 18;
+                        childToggles = (uint16_t)std::min(65535, (int)childToggles + wAdd);
+                    }
                     if (reachedGoal(px, py, depth)) {
                         // After the cutoff, discard without evaluating (see the note on
                         // g_maxDoomed). The search continues but the cost does not grow.
@@ -6792,7 +6801,8 @@ class $modify(GJBaseGameLayer) {
                 // edge into a jump of player 1 -- so there it is not pressed, and said once.
                 // The text of that line is also how the harness tells a package that has this input path from one that
                 // does not (py/gdtas/gdbase.py PLAYER2_INPUT_MARK): reword it there too, or the guard lets plans through.
-                const bool twoPlayerLevel = m_levelSettings && m_levelSettings->m_twoPlayerMode;
+                const bool twoPlayerLevel = (m_levelSettings && m_levelSettings->m_twoPlayerMode)
+                                         || (m_level && m_level->m_twoPlayerMode);
                 if (in.p2 && !twoPlayerLevel) {
                     static bool said = false;
                     if (!said) {
@@ -7365,9 +7375,7 @@ class $modify(GJBaseGameLayer) {
                 s_liveRecording = itermap::g_paths.empty();
             }
             if (s_liveRecording) {
-                const bool twoPlayer = (m_levelSettings && m_levelSettings->m_twoPlayerMode)
-                                    || (m_level && m_level->m_twoPlayerMode);
-                const bool p2InPlay = (m_gameState.m_isDualMode || twoPlayer) && m_player2 && m_player2 != m_player1;
+                const bool p2InPlay = m_gameState.m_isDualMode && m_player2 && m_player2 != m_player1;
                 itermap::recordLiveStep(m_player1->getPositionX(), m_player1->getPositionY(),
                                         p2InPlay ? m_player2->getPositionX() : 0.f,
                                         p2InPlay ? m_player2->getPositionY() : 0.f,
@@ -8141,32 +8149,41 @@ class $modify(GJBaseGameLayer) {
     }
 
     void handleButton(bool down, int button, bool isPlayer1) {
+        // GD's GJBaseGameLayer::handleButton XORs `isPlayer1` internally when "Flip 2-Player
+        // Controls" (game variable "0010") is enabled outside editor/replay playback. Bot
+        // injections pass the physical target player (`!in.p2`), so pre-flip before calling GD;
+        // non-injected calls arrive pre-flip, so recover physical player1 for logging/takeover.
+        const bool flip2P = !this->m_isEditor && !this->m_useReplay
+            && GameManager::sharedState()
+            && GameManager::sharedState()->getGameVariable("0010");
+        const bool physPlayer1 = (g_injecting || !flip2P) ? isPlayer1 : !isPlayer1;
+        const bool callPlayer1 = (g_injecting && flip2P) ? !isPlayer1 : isPlayer1;
         // Replay mode: block real input other than injections (still recorded).
         // !g_sessionOver is required: without it the block persists after the session
         // ends and manual play stops working
         // ...except a person's, once a takeover has given them the input (mod/takeover.hpp).
         if (g_cfg.blockInput && g_started && !g_sessionOver && !g_injecting
             && !takeover::personDriving()) {
-            ev("handleButton_BLOCKED", down, button, isPlayer1);
+            ev("handleButton_BLOCKED", down, button, physPlayer1);
             return;
         }
-        ev("handleButton", down, button, isPlayer1);
+        ev("handleButton", down, button, physPlayer1);
         // The person's presses, at the tick GD applies them: g_tick is the substep about to run
         // (or, between frames, the next one), which is the step an injection of the same press
         // is fed at.
-        if (!g_injecting && takeover::personDriving()) takeover::noteInput(down, button, isPlayer1);
+        if (!g_injecting && takeover::personDriving()) takeover::noteInput(down, button, physPlayer1);
         // Remember the raw press for the slope trace. Jump only (button 1) and
         // player 1 only: the second body follows the same input in these levels,
         // and a per-half press would need the dual input split, which no probe
         // here varies.
-        if (button == 1 && isPlayer1) g_btnDown = down;
+        if (button == 1 && physPlayer1) g_btnDown = down;
         // cfg batchlog (print only): the tick each press and release reaches GD at
         if (itermap::g_batchFrom >= 0 && g_tick >= itermap::g_batchFrom && g_tick <= itermap::g_batchTo
             && g_started && !g_sessionOver)
             writeResult("batch: button t=" + std::to_string((long long)g_tick) + " down=" + std::to_string(down ? 1 : 0)
-                        + " btn=" + std::to_string(button) + " p1=" + std::to_string(isPlayer1 ? 1 : 0)
+                        + " btn=" + std::to_string(button) + " p1=" + std::to_string(physPlayer1 ? 1 : 0)
                         + " run=" + (seekcp::g_from < 0 ? std::string("head") : "cp@" + std::to_string(seekcp::g_from)));
-        GJBaseGameLayer::handleButton(down, button, isPlayer1);
+        GJBaseGameLayer::handleButton(down, button, callPlayer1);
     }
 
     int checkCollisions(PlayerObject* player, float dt, bool ignoreDamage) {
