@@ -205,10 +205,16 @@ inline void fillBotBadge(cocos2d::CCLabelBMFont* lbl) {
     // A person playing through a takeover (mod/takeover.hpp) is still a bot session -- nothing it
     // does is recorded -- and the badge says whose input it is.
     const int mode = showingSolve() ? 1 : takeover::personDriving() ? 2 : 0;
-    if (!*lbl->getString() || mode != s_wasMode) {
+    const int prof = (mode == 1) ? g_cfg.solveProfile : PROFILE_NORMAL;
+    static int s_wasProf = -1;
+    if (!*lbl->getString() || mode != s_wasMode || prof != s_wasProf) {
         s_wasMode = mode;
-        const std::string text = "GDSOLVER BOT " + s_version
-                               + (mode == 1 ? " - SOLVING" : mode == 2 ? " - HUMAN INPUT" : " - REPLAY");
+        s_wasProf = prof;
+        std::string text = "GDSOLVER BOT " + s_version
+                         + (mode == 1 ? " - SOLVING" : mode == 2 ? " - HUMAN INPUT" : " - REPLAY");
+        if (mode == 1 && prof != PROFILE_NORMAL) {
+            text += std::string(" [") + uiProfileName(prof) + "]";
+        }
         lbl->setString(text.c_str());
     }
 }

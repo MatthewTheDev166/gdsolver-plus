@@ -501,11 +501,11 @@ protected:
         return t;
     }
 
-    // The Replay form: 240 high; the fixed replay step row (with its (i)), the Hold Play row and its note,
-    // the Macro Export Folder row, and OK.
+    // The Replay form: 258 high; the fixed replay step row (with its (i)), the Hold Play row and its note,
+    // the Macro Export Folder row (path on its own full-width row, Browse + Reset below it), and OK.
     bool initReplay(bool replayStep, ReplayChange onChange) {
         using namespace cocos2d;
-        if (!PopupBase::init(kW, 240.f)) return false;
+        if (!PopupBase::init(kW, 258.f)) return false;
         this->setID("play-menu-options"_spr);
         m_replayStep = replayStep;
         m_onReplay = std::move(onChange);
@@ -528,13 +528,18 @@ protected:
         m_exportPathLabel = CCLabelBMFont::create(curPath.c_str(), "chatFont.fnt");
         m_exportPathLabel->setID("export-path-label"_spr);
         m_exportPathLabel->setColor({210, 230, 255});
-        ui::limitNodeWidth(m_exportPathLabel, 195.f, .52f, .25f);
-        ui::addChildAtPosition(m_mainLayer, m_exportPathLabel, Anchor::Top, ccp(-32.f, -150.f));
+        ui::limitNodeWidth(m_exportPathLabel, 268.f, .52f, .24f);
+        ui::addChildAtPosition(m_mainLayer, m_exportPathLabel, Anchor::Top, ccp(0.f, -142.f));
 
-        auto* browseSpr = ButtonSprite::create("Browse", 52, true, "goldFont.fnt", "GJ_button_04.png", 26.f, .55f);
+        auto* browseSpr = ButtonSprite::create("Browse", 60, true, "goldFont.fnt", "GJ_button_04.png", 26.f, .55f);
         auto* browseBtn = CCMenuItemSpriteExtra::create(browseSpr, this, menu_selector(Options::onBrowse));
         browseBtn->setID("export-browse-button"_spr);
-        ui::addChildAtPosition(m_buttonMenu, browseBtn, Anchor::Top, ccp(98.f, -150.f));
+        ui::addChildAtPosition(m_buttonMenu, browseBtn, Anchor::Top, ccp(-42.f, -172.f));
+
+        auto* resetSpr = ButtonSprite::create("Reset", 60, true, "goldFont.fnt", "GJ_button_04.png", 26.f, .55f);
+        auto* resetBtn = CCMenuItemSpriteExtra::create(resetSpr, this, menu_selector(Options::onResetExportPath));
+        resetBtn->setID("export-reset-button"_spr);
+        ui::addChildAtPosition(m_buttonMenu, resetBtn, Anchor::Top, ccp(42.f, -172.f));
 
         auto* okSpr = ButtonSprite::create("OK", "goldFont.fnt", "GJ_button_01.png", .8f);
         auto* ok = CCMenuItemSpriteExtra::create(okSpr, this, menu_selector(Options::onOk));
@@ -542,6 +547,15 @@ protected:
         ui::addChildAtPosition(m_buttonMenu, ok, Anchor::Bottom, ccp(0.f, 22.f));
         showMenuNote(!Mod::get()->getSettingValue<bool>("play-menu"));
         return true;
+    }
+
+    void onResetExportPath(CCObject*) {
+        const std::string defPath = (geode::dirs::getGameDir() / "replays").string();
+        setExportFolderPath(defPath);
+        if (m_exportPathLabel) {
+            m_exportPathLabel->setString(defPath.c_str());
+            ui::limitNodeWidth(m_exportPathLabel, 268.f, .52f, .24f);
+        }
     }
 
     void onBrowse(CCObject*) {
@@ -589,7 +603,7 @@ protected:
                         setExportFolderPath(pickedStr);
                         if (m_exportPathLabel) {
                             m_exportPathLabel->setString(pickedStr.c_str());
-                            ui::limitNodeWidth(m_exportPathLabel, 195.f, .52f, .25f);
+                            ui::limitNodeWidth(m_exportPathLabel, 268.f, .52f, .24f);
                         }
                         CoTaskMemFree(pszFilePath);
                     }
@@ -766,6 +780,7 @@ protected:
     CCMenuItemSpriteExtra* m_startBtn = nullptr;
     ButtonSprite* m_exportSpr = nullptr;
     CCMenuItemSpriteExtra* m_exportBtn = nullptr;
+    cocos2d::CCLabelBMFont* m_replayStats = nullptr;
     int m_profile = PROFILE_NORMAL;
     cocos2d::CCLabelBMFont* m_profileDesc = nullptr;
     ButtonSprite* m_profileSpr[PROFILE_COUNT] = {};
@@ -775,18 +790,14 @@ protected:
     // the Coins row (offsets from the top edge), then from the bottom edge up Start, the bot note
     // and the level's notes, one row each. Each row keeps clear of the next at its tallest -- the
     // description is two lines, the checkbox is taller than its label -- which the first cut (230
-    // high) did not: the checkbox sat on the bot note. With one note the popup is 260 high; each
-    // further note adds a row to it, so the notes never climb into the checkbox rows. The "Avoid
-    // glitches" row that sat under Coins moved to Options (2026-10-11, the user's call: the menu
-    // keeps Coins, the other Solve settings go to a page of their own), which a button in the
-    // top-right corner opens, as the game's Advanced does on its video options; the popup is 260
-    // high again, with a row kept for each of the two warnings Options can raise.
-    // The "Solve faster (not reproducible)" row is gone from the menu (the user's call,
-    // 2026-10-01), and the setting itself from mod.json (2026-10-16): cfg dpplainbeside=3 is its only way in.
+    // high) did not: the checkbox sat on the bot note. With one note the popup is 334 high (keeping
+    // 24 units of room below the second row of profile buttons at -229); each further note adds a
+    // row to it, so the notes never climb into the profile buttons or the checkbox rows.
     // Even so the popup can be taller than the screen -- GD's design height is 320 -- so
-    // shrinkToFit scales it down to fit.
-    static constexpr float kW = 340.f, kH = 308.f;
+    // fitScale() scales it down to fit.
+    static constexpr float kW = 340.f, kH = 334.f;
     static constexpr float kModeY = -82.f, kDescY = -121.f, kCoinY = -153.f, kExportY = -196.f;   // from the top edge
+    static constexpr float kReplayStatsY = -225.f;
     static constexpr float kProfileDescY = -175.f;
     static constexpr float kProfileRow1Y = -199.f, kProfileRow2Y = -229.f;
     static constexpr float kNoteY = 56.f, kStartY = 28.f;   // from the bottom edge
@@ -987,6 +998,12 @@ protected:
         m_exportBtn->setID("export-macro-button"_spr);
         ui::addChildAtPosition(m_buttonMenu, m_exportBtn, Anchor::Top, ccp(0.f, kExportY));
 
+        m_replayStats = CCLabelBMFont::create("", "chatFont.fnt");
+        m_replayStats->setScale(.55f);
+        m_replayStats->setColor({185, 235, 255});
+        m_replayStats->setID("replay-stats"_spr);
+        ui::addChildAtPosition(m_mainLayer, m_replayStats, Anchor::Top, ccp(0.f, kReplayStatsY));
+
         m_profile = std::clamp(Mod::get()->getSavedValue<int>("play-profile", PROFILE_NORMAL),
                                0, PROFILE_COUNT - 1);
         m_profileDesc = CCLabelBMFont::create("", "chatFont.fnt", 320.f, kCCTextAlignmentCenter);
@@ -1134,11 +1151,21 @@ protected:
         const bool isReplay = (m_mode == UI_MODE_REPLAY);
         m_exportBtn->setVisible(isReplay);
         if (isReplay) {
-            const bool canExport = hasSolution();
+            std::vector<InputCmd> plan;
+            const bool canExport = loadInputsFile(uiSolutionPath(m_levelId, m_coins), plan, true);
             m_exportBtn->setEnabled(canExport);
             m_exportSpr->setColor(canExport ? kWhite : kDim);
+            if (m_replayStats) {
+                m_replayStats->setVisible(canExport);
+                if (canExport) {
+                    const auto st = gdsolver::macro::computePlanStats(plan);
+                    m_replayStats->setString(gdsolver::macro::formatPlanStats(st).c_str());
+                    ui::limitNodeWidth(m_replayStats, kW - 30.f, .55f, .3f);
+                }
+            }
         } else {
             m_exportBtn->setEnabled(false);
+            if (m_replayStats) m_replayStats->setVisible(false);
         }
         const bool isSolve = (m_mode == UI_MODE_SOLVE);
         if (m_profileDesc) {
@@ -1206,7 +1233,12 @@ protected:
         );
 
         if (exported) {
-            notify::show("Exported " + outFilename, geode::NotificationIcon::Success, 3.f);
+            const std::string msg = m_facts.random
+                ? ("Exported " + outFilename + " (RNG pinned: may differ outside mod)")
+                : ("Exported " + outFilename);
+            notify::show(msg, m_facts.random ? geode::NotificationIcon::Warning
+                                             : geode::NotificationIcon::Success,
+                         m_facts.random ? 4.5f : 3.f);
         } else {
             notify::show("Export failed: " + outError, geode::NotificationIcon::Error, 4.f);
         }

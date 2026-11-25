@@ -1275,9 +1275,9 @@ constexpr float kGlitchStageScale[] = {1.f, .5f, .25f, 0.f};
 constexpr int kGlitchStages = 4;
 inline float g_waveRelaxedX = -1.f;   // the deepest death when either was eased: the stretch is measured from it
 constexpr float kWaveRelaxSpan = 900.f;
-// Is there something left to ease? The wave's behaviour, or a margin not yet off.
+// Is there something left to ease? The wave's behaviour, the flying pulse floor, or a margin not yet off.
 inline bool glitchSoftenable() {
-    return ((g_cfg.wavePulse > 1 || g_cfg.waveCentre > 0.0) && !g_waveRelaxed)
+    return ((g_cfg.wavePulse > 1 || g_cfg.waveCentre > 0.0 || g_cfg.flyPulse > 1) && !g_waveRelaxed)
         || ((g_cfg.glitchPortal > 0.0 || g_cfg.glitchWave > 0.0 || g_cfg.glitchEmbed > 0.0)
             && g_glitchStage < kGlitchStages - 1);
 }
@@ -3080,7 +3080,7 @@ inline std::vector<std::string> baseArgs(const std::string& out,
         }
     }
     if (g_cfg.glitchDeco) a.push_back("--glitchdeco");
-    // ...and the wave's behaviour (the menu's third choice), until a search with it found no anchor (escalate).
+    // ...and the wave/flying pulse behaviour, until a search with it found no anchor (escalate).
     if (!g_waveRelaxed) {
         if (g_cfg.wavePulse > 1) {
             a.push_back("--wavepulse");
@@ -3089,6 +3089,10 @@ inline std::vector<std::string> baseArgs(const std::string& out,
         if (g_cfg.waveCentre > 0.0) {
             a.push_back("--wavecentre");
             a.push_back(num(g_cfg.waveCentre));
+        }
+        if (g_cfg.flyPulse > 1) {
+            a.push_back("--flypulse");
+            a.push_back(std::to_string(g_cfg.flyPulse));
         }
     }
     // ...and dp's --ladderovercapstop wherever dphorizongrow acts (a level of dphorizongrowmin ticks or more): it was made for the grown plans of a very long level, and on the official levels it cost
@@ -3102,10 +3106,6 @@ inline std::vector<std::string> baseArgs(const std::string& out,
     if (g_cfg.waveToggle > 0) {
         a.push_back("--wavetoggle");
         a.push_back(std::to_string(g_cfg.waveToggle));
-    }
-    if (g_cfg.flyPulse > 0) {
-        a.push_back("--flypulse");
-        a.push_back(std::to_string(g_cfg.flyPulse));
     }
     if (g_cfg.solveProfile != 0) {
         a.push_back("--profile");
@@ -9884,13 +9884,13 @@ inline bool escalate() {
     // halved, quartered, off. Each step holds for the stretch only (the iteration handler puts it all back
     // kWaveRelaxSpan px past the wall). Said in result.txt and on screen. Not counted against the backstop below.
     if (glitchSoftenable()) {
-        const bool waveStep = (g_cfg.wavePulse > 1 || g_cfg.waveCentre > 0.0) && !g_waveRelaxed;
+        const bool waveStep = (g_cfg.wavePulse > 1 || g_cfg.waveCentre > 0.0 || g_cfg.flyPulse > 1) && !g_waveRelaxed;
         const char* what;
         if (waveStep) {
             g_waveRelaxed = true;
-            what = "the wave behaviour (button floor, terrain clearance) is dropped for this stretch; "
+            what = "the pulse/corridor limits (wave/flying pulse floor, terrain clearance) are dropped for this stretch; "
                    "Avoid glitches' margins stay";
-            notify::show("gdsolver: no route kept the wave's behaviour - continuing with Avoid glitches only",
+            notify::show("gdsolver: no route kept the pulse/corridor limits - relaxing them for this stretch",
                          NotificationIcon::Warning, 6.f);
         } else {
             ++g_glitchStage;

@@ -1270,10 +1270,104 @@ void humanPortalEnforcement() {
     }
 }
 
+void profileDedupePromotion() {
+    auto objRow = [](int id, int type, double cx, double cy, double w, double h, int uid) {
+        std::ostringstream os;
+        os << id << "," << type << "," << cx << "," << cy << "," << w << "," << h << ",0," << uid << ",0,0\n";
+        return os.str();
+    };
+    auto countPlanLines = [](const std::string& planPath) {
+        std::ifstream f(planPath);
+        std::string ln;
+        int n = 0;
+        while (std::getline(f, ln)) {
+            if (ln.rfind("input=", 0) == 0) ++n;
+        }
+        return n;
+    };
+
+    // 1. betterProfileState tie-breaking respects Max Clicks (smaller edgeAge) vs other profiles (larger edgeAge).
+    {
+        dp::State a{}, b{};
+        a.mode = 1; b.mode = 1;
+        a.tight = 10; b.tight = 10;
+        a.edgeAge = 2; b.edgeAge = 10;
+        const int prev = dp::g_solveProfile;
+        dp::g_solveProfile = 2;
+        check(dp::betterProfileState(a, b) && !dp::betterProfileState(b, a),
+              "profile tie-break: Max Clicks prefers fresher toggle (smaller edgeAge)");
+        dp::g_solveProfile = 1;
+        check(dp::betterProfileState(b, a) && !dp::betterProfileState(a, b),
+              "profile tie-break: Min Clicks prefers steadier hold (larger edgeAge)");
+        dp::g_solveProfile = prev;
+    }
+
+    // 2. End-to-end flat corridor: Min Clicks emits 0 inputs, Max Clicks emits active spam, Centerline clears centered.
+    std::string csv = std::string(kObjHeader) + "\n";
+    int uid = 5000;
+    for (double x = 15.0; x <= 615.0; x += 30.0) {
+        csv += objRow(1, 0, x, 15.0, 30.0, 30.0, uid++);
+        csv += objRow(1, 0, x, 315.0, 30.0, 30.0, uid++);
+    }
+    const std::string lvPath = writeTmp("dptest_profile_corridor.csv", csv);
+
+    auto runProf = [&](int prof, const char* startArg, const char* tag) {
+        const std::string outPath =
+            (std::filesystem::temp_directory_path() / (std::string("dptest_prof_") + tag + "_plan.txt")).string();
+        const std::string tracePath = outPath + ".trace.csv";
+        std::remove(outPath.c_str());
+        std::remove(tracePath.c_str());
+        std::string pStr = std::to_string(prof);
+        std::vector<std::string> argvStr = {
+            "leveldp", lvPath, "--out", outPath, "--profile", pStr,
+            "--start", startArg, "--startband", "30,300"
+        };
+        std::vector<char*> argvPtr;
+        for (std::string& s : argvStr) argvPtr.push_back(s.data());
+        const int rc = dp::cliMain((int)argvPtr.size(), argvPtr.data());
+        const bool solved = (rc == 0 && dp::g_outcome.verdict == dp::VerdictSolved);
+        const int inputs = countPlanLines(outPath);
+        double maxOff = 0.0;
+        {
+            std::ifstream tf(tracePath);
+            std::string ln;
+            std::getline(tf, ln);
+            while (std::getline(tf, ln)) {
+                if (ln.empty()) continue;
+                std::istringstream is(ln);
+                std::string col;
+                double y = 165.0;
+                for (int c = 0; c <= 2 && std::getline(is, col, ','); ++c) {
+                    if (c == 2) y = std::atof(col.c_str());
+                }
+                maxOff = std::max(maxOff, std::fabs(y - 165.0));
+            }
+        }
+        std::remove(outPath.c_str());
+        std::remove(tracePath.c_str());
+        return std::tuple<bool, int, double>{solved, inputs, maxOff};
+    };
+
+    const auto [minOk, minInputs, minOff] = runProf(1, "0,30,45,0,0,0,0", "min");
+    (void)minOff;
+    check(minOk && minInputs == 0, "profile E2E: Min Clicks clears flat floor with 0 clicks");
+
+    const auto [maxOk, maxInputs, maxOff] = runProf(2, "0,30,45,0,0,0,0", "max");
+    (void)maxOff;
+    check(maxOk && maxInputs >= 6, "profile E2E: Max Clicks clears flat floor with active clicking");
+
+    const auto [ctrOk, ctrInputs, ctrOff] = runProf(4, "0,30,165,0,1,0,0", "ctr");
+    (void)ctrInputs;
+    check(ctrOk && ctrOff < 75.0, "profile E2E: Centerline Ship keeps route near corridor center");
+
+    std::remove(lvPath.c_str());
+}
+
 int main(int argc, char** argv) {
     if (argc > 2 && !std::strcmp(argv[1], "--groups-corpus")) return groupsCorpus(argc, argv);
     humanGapJumpTiming();
     humanPortalEnforcement();
+    profileDedupePromotion();
     bandSourceRows();
     formulaRecProvenance();
     twoBodyMergeHeldMask();

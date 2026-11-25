@@ -5147,11 +5147,15 @@ class $modify(GJBaseGameLayer) {
                 };
                 std::stable_sort(cur.begin(), cur.end(), [&](int a, int b) { return pc(a) > pc(b); });
             }
-            const bool humanSec = (g_cfg.solveProfile == PROFILE_HUMAN
-                                   || g_cfg.solveProfile == PROFILE_MIN_CLICKS);
-            if (humanSec && cur.size() > 1) {
+            const bool lowToggleSec = (g_cfg.solveProfile == PROFILE_HUMAN
+                                       || g_cfg.solveProfile == PROFILE_MIN_CLICKS
+                                       || g_cfg.solveProfile == PROFILE_CENTERLINE);
+            const bool maxClickSec = (g_cfg.solveProfile == PROFILE_MAX_CLICKS);
+            if ((lowToggleSec || maxClickSec) && cur.size() > 1) {
                 std::stable_sort(cur.begin(), cur.end(), [&](int a, int b) {
-                    return g_nodes[(size_t)a].toggles < g_nodes[(size_t)b].toggles;
+                    return maxClickSec
+                        ? (g_nodes[(size_t)a].toggles > g_nodes[(size_t)b].toggles)
+                        : (g_nodes[(size_t)a].toggles < g_nodes[(size_t)b].toggles);
                 });
             }
             for (int ni : cur) {
@@ -5175,7 +5179,9 @@ class $modify(GJBaseGameLayer) {
                 }
                 const int parentIn = (int)g_nodes[(size_t)ni].in;
                 for (int bOrd = 0; bOrd < 2; ++bOrd) {
-                    const int branch = humanSec ? (bOrd == 0 ? parentIn : 1 - parentIn) : bOrd;
+                    const int branch = lowToggleSec ? (bOrd == 0 ? parentIn : 1 - parentIn)
+                                     : maxClickSec  ? (bOrd == 0 ? 1 - parentIn : parentIn)
+                                                    : bOrd;
                     const uint8_t childEdgeAge = (branch == parentIn)
                         ? (uint8_t)std::min(255, (int)g_nodes[(size_t)ni].edgeAge + 1)
                         : (uint8_t)1;
@@ -5752,10 +5758,12 @@ class $modify(GJBaseGameLayer) {
                 out.reserve(q);
                 out.push_back(v.front()); in.insert(v.front());
                 out.push_back(v.back()); in.insert(v.back());
-                if (humanSec) {
+                if (lowToggleSec || maxClickSec) {
                     std::vector<int> byTog(v);
                     std::stable_sort(byTog.begin(), byTog.end(), [&](int a, int b) {
-                        return g_nodes[(size_t)a].toggles < g_nodes[(size_t)b].toggles;
+                        return maxClickSec
+                            ? (g_nodes[(size_t)a].toggles > g_nodes[(size_t)b].toggles)
+                            : (g_nodes[(size_t)a].toggles < g_nodes[(size_t)b].toggles);
                     });
                     for (int ni : byTog) {
                         if (out.size() >= q) break;

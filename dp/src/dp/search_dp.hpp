@@ -397,8 +397,10 @@ inline bool betterProfileState(const State& cand, const State& inc) {
     const int ct = humanEffectiveTight(cand);
     const int it = humanEffectiveTight(inc);
     if (ct != it) return ct < it;
-    if (cand.mode == 1 || cand.mode == 3 || cand.mode == 4 || cand.mode == 7)
+    if (cand.mode == 1 || cand.mode == 3 || cand.mode == 4 || cand.mode == 7) {
+        if (g_solveProfile == 2) return cand.edgeAge < inc.edgeAge;
         return cand.edgeAge > inc.edgeAge;
+    }
     return false;
 }
 
@@ -1244,10 +1246,10 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                 nxt.push_back(State{});
                 sl.hi = sl.lo = (int)nxt.size() - 1;
                 finish(nxt.back());
-            } else if (g_solveProfile == 3) {
-                // Keep sl.hi as the most human state (lowest humanEffectiveTight) while sl.lo preserves
-                // either the highest-climbing vy trajectory (so Robot/Cube never lose jump reachability)
-                // or the runner-up human state when vy is equal.
+            } else if (g_solveProfile != 0) {
+                // Keep sl.hi as the best-scoring profile state (lowest humanEffectiveTight) while sl.lo
+                // preserves either the highest-climbing vy trajectory (so Robot/Cube/Ship never lose
+                // reachability) or the runner-up profile state when vy is equal.
                 const double extremeVy = s.flip ? -(double)s.vy : (double)s.vy;
                 const double loExtVy = s.flip ? -(double)nxt[(size_t)sl.lo].vy : (double)nxt[(size_t)sl.lo].vy;
                 if (betterSlot(s, nxt[(size_t)sl.hi])) {
@@ -2211,7 +2213,7 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                         auto betterIdx = [&](uint32_t candIdx, uint32_t incIdx) {
                             return betterProfileState(kids[candIdx].s, kids[incIdx].s);
                         };
-                        if (g_solveProfile == 3) {
+                        if (g_solveProfile != 0) {
                             const bool invG = kids[i].s.flip != 0;
                             const double extVy = invG ? -(double)vy : (double)vy;
                             const double loExtVy = invG ? -(double)r.loVy : (double)r.loVy;
