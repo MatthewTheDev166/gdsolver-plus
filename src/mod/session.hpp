@@ -123,11 +123,15 @@ inline bool uiConfigureSession(int levelId) {
             g_cfg.wavePulse = 18;
             g_cfg.waveToggle = std::max(g_cfg.waveToggle, 20);
         } else if (g_cfg.solveProfile == PROFILE_HUMAN) {
-            // Human: soft toggle cost & proximity cushion in search_dp.hpp; no hard pulse limits or forced centerline
+            // Human: soft toggle cost & proximity cushion in search_dp.hpp; automatic portal-squeeze
+            // protection (glitchPortal, without glitchDeco/glitchEmbed) and never clobber Glitches + wave.
             g_cfg.flyPulse = 0;
-            g_cfg.wavePulse = 0;
-            g_cfg.waveTidy = 0.0;
-            g_cfg.waveCentre = 0.0;
+            g_cfg.glitchPortal = std::max(g_cfg.glitchPortal, kGlitchPortalDefault);
+            if (g_uiGlitchMode < UI_GLITCH_WAVE) {
+                g_cfg.wavePulse = 0;
+                g_cfg.waveTidy = 0.0;
+                g_cfg.waveCentre = 0.0;
+            }
         } else if (g_cfg.solveProfile == PROFILE_CENTERLINE) {
             g_cfg.flyPulse = 12;
             g_cfg.wavePulse = std::max(g_cfg.wavePulse, 12);

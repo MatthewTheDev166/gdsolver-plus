@@ -15559,7 +15559,8 @@ inline State stepOne(const State& s, int input, const StepCtx& K, bool& dead,
                         std::fabs(x - p->cx), p->hw + pHalfP, std::fabs((double)yFree - p->cy),
                         p->hh + pHalfP,
                         (p->gpBit >= 0 && s.portalLatch.test(p->gpBit)) ? 1 : 0);
-        if (std::fabs(x - p->cx) > p->hw + pHalfP) continue;
+        const double orientXPad = (p->oriented && g_glitchPortal > 0.0) ? g_glitchPortal : 0.0;
+        if (std::fabs(x - p->cx) > p->hw + pHalfP + orientXPad) continue;
         // ...and a TURNED portal's bound is far wider than the portal. lv18's
         // cube portal at (27,755.8,371.162) is 51 degrees over, bounds 88 px and
         // is really 34: firing on the bound made the model a cube 48 px early,
@@ -15643,8 +15644,11 @@ inline State stepOne(const State& s, int input, const StepCtx& K, bool& dead,
         const double pyOrient = (g_portSlopePre && p->oriented && c.onSlope && c.frame == 0
                                  && !s.dual && !c.dual && c.slopeUidNow > p->uid)
                                     ? (double)yFree : (double)c.y;
-        if (p->oriented
-            && !orientedHit(*p, x, pyOrient, pHalfP, pRotHere))
+        const bool orientMiss = p->oriented
+            && !orientedHit(*p, x, pyOrient, pHalfP, pRotHere);
+        if (orientMiss
+            && (g_glitchPortal <= 0.0
+                || !orientedHit(*p, x, pyOrient, pHalfP + g_glitchPortal, pRotHere)))
             continue;
         // A portal sitting on the rotation trigger that put us in this frame
         // does not fire again (the measurements are at the function, which the
@@ -15824,12 +15828,13 @@ inline State stepOne(const State& s, int input, const StepCtx& K, bool& dead,
         // no epsilon), so edges that touch exactly do overlap and the portal
         // fires. The model had the open form and skipped that case.
         // [2026-09-03, from the disassembly of collisionCheckObjects 0x214960]
-        if (gapY > 0.0) {
+        if (orientMiss || gapY > 0.0) {
             // ...and the glitch-avoid mode's wider margin, under the same closing rule
             // (thread_pool.hpp g_glitchPortal). Named apart, so a run can say which one it was.
-            const bool glitchDodge = g_glitchPortal > g_portalDodgeMin
-                                     && gapY >= g_portalDodgeMin;
-            if (changes && gapY < std::max(g_portalDodgeMin, g_glitchPortal)) {
+            const bool glitchDodge = orientMiss
+                                     || (g_glitchPortal > g_portalDodgeMin
+                                         && gapY >= g_portalDodgeMin);
+            if (changes && (orientMiss || gapY < std::max(g_portalDodgeMin, g_glitchPortal))) {
                 // A portal you are still CLOSING ON is not one you dodged.
                 // [2026-09-03] The guard was asked on every tick of the
                 // approach, so the last tick before a crossing -- where the gap
@@ -15855,13 +15860,16 @@ inline State stepOne(const State& s, int input, const StepCtx& K, bool& dead,
                 // Census before/after over lv1-22 (gapy_census.py): the fatal
                 // band held exactly one decision with `changes`, and it was
                 // this false kill.
+                const bool closingDist = orientMiss
+                    ? (((x - p->cx) * (x - p->cx) + (pyOrient - p->cy) * (pyOrient - p->cy))
+                       < ((xPrev - p->cx) * (xPrev - p->cx)
+                          + ((double)s.y - p->cy) * ((double)s.y - p->cy)))
+                    : (std::fabs(yPort - p->cy) < std::fabs((double)s.y - p->cy));
                 const bool stillClosing =
                     // a frame change puts the two y's in different frames, so
                     // the guard abstains rather than kill on a number it cannot
                     // compare
-                    s.frame != c.frame
-                    || std::fabs(yPort - p->cy)
-                           < std::fabs((double)s.y - p->cy);
+                    s.frame != c.frame || closingDist;
                 if (!stillClosing) {
                     if (glitchDodge) DIE_AS(kDeathRule, "glitch/portal-dodge", p);
                     else DIE_AS(kDeathRule, "portal/hairline-dodge", p);

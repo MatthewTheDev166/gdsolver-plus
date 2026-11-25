@@ -1268,6 +1268,65 @@ void humanPortalEnforcement() {
         check(fakeMini.first && fakeMini.second == 4,
               "human portal E2E: lethal fake Cube portal still dodges as Mini-Wave and clears level");
     }
+
+    // 5. Portal-center aiming unit test + rotated-portal --glitchportal E2E test.
+    {
+        dp::State sPre{};
+        sPre.xAbs = 195.0f; sPre.y = 150.0f; sPre.mode = 4;
+        dp::State kidCenter = sPre, kidRim = sPre;
+        kidCenter.xAbs = 200.0f; kidCenter.y = 152.0f; kidCenter.portSeen[0] = 9101;
+        kidRim.xAbs    = 200.0f; kidRim.y    = 186.0f; kidRim.portSeen[0]    = 9101;
+        dp::Obj cp{};
+        cp.uid = 9101; cp.type = 6; cp.cx = 200.0; cp.cy = 150.0; cp.hw = 17.0; cp.hh = 37.5;
+        std::vector<const dp::Obj*> cPorts{&cp};
+        const double wh = dp::playerHalf(4, false);
+        check(dp::humanPortalCenterPenalty(sPre, kidCenter, cPorts, wh, wh) == 0,
+              "human portal center: centered portal entry charges 0");
+        check(dp::humanPortalCenterPenalty(sPre, kidRim, cPorts, wh, wh) > 0,
+              "human portal center: outer-rim portal entry charges > 0");
+
+        auto rotRow = [](int id, int type, double cx, double cy, double w, double h, int uid, double rot) {
+            std::ostringstream os;
+            os << id << "," << type << "," << cx << "," << cy << "," << w << "," << h
+               << ",0," << uid << ",0," << rot << "\n";
+            return os.str();
+        };
+        auto runRotPortal = [&](double gp) -> bool {
+            std::string csv = std::string(kObjHeader) + "\n";
+            csv += rotRow(12, 6, 200.0, 150.0, 34.0, 75.0, 9201, 25.0);
+            int uid = 9300;
+            for (double x = 15.0; x <= 515.0; x += 30.0) {
+                csv += rotRow(1, 0, x, 15.0, 30.0, 30.0, uid++, 0.0);
+            }
+            // Wall at x=280 blocks any Cube exiting low; ceiling above y=198 forces Wave within <15px of tilted portal.
+            csv += rotRow(1, 0, 280.0, 95.0, 30.0, 160.0, uid++, 0.0);
+            csv += rotRow(1, 0, 200.0, 250.0, 120.0, 100.0, uid++, 0.0);
+            const std::string lvPath = writeTmp("dptest_rot_glitchportal.csv", csv);
+            const std::string outPath =
+                (std::filesystem::temp_directory_path() / "dptest_rot_glitchportal_plan.txt").string();
+            std::remove(outPath.c_str());
+            std::vector<std::string> args = {
+                "leveldp", lvPath, "--out", outPath,
+                "--start", "0,30,150,0,4,0,0", "--startband", "30,300"
+            };
+            if (gp > 0.0) {
+                args.push_back("--glitchportal");
+                args.push_back(std::to_string(gp));
+            }
+            std::vector<char*> ptrs;
+            for (auto& a : args) ptrs.push_back(a.data());
+            const int rc = dp::cliMain((int)ptrs.size(), ptrs.data());
+            const bool solved = (rc == 0 && dp::g_outcome.verdict == dp::VerdictSolved);
+            std::remove(outPath.c_str());
+            std::remove((outPath + ".trace.csv").c_str());
+            std::remove(lvPath.c_str());
+            return solved;
+        };
+        check(runRotPortal(0.0),
+              "glitchportal E2E: baseline (0 margin) allows squeezing over tilted cube portal");
+        check(!runRotPortal(15.0),
+              "glitchportal E2E: --glitchportal 15 blocks tight wave squeeze over tilted cube portal");
+    }
 }
 
 void profileDedupePromotion() {

@@ -377,6 +377,47 @@ inline int humanWavePortalSpamPenalty(const State& s, const State& kid, int inpu
     return 0;
 }
 
+// Gentle preference for entering state-changing portals near their vertical center rather than
+// grazing the extreme outer 1-2 px rim when a wider entry window is available.
+inline int humanPortalCenterPenalty(const State& s, const State& kid,
+                                    const std::vector<const Obj*>& ports,
+                                    double half1, double half2) {
+    if (kid.frame != 0) return 0;
+    auto bodyChanged = [&](const Obj& p, bool p2) -> bool {
+        if (p.uid >= 0) {
+            auto hasSeen = [&](const State& st) {
+                for (int i = 0; i < 3; ++i)
+                    if ((p2 ? st.portSeen2[i] : st.portSeen[i]) == p.uid) return true;
+                return false;
+            };
+            if (!hasSeen(s) && hasSeen(kid)) return true;
+        }
+        if (p.gpBit >= 0 && !s.portalLatch.test(p.gpBit) && kid.portalLatch.test(p.gpBit)) return true;
+        return false;
+    };
+    int pen = 0;
+    const double kx1 = (double)kid.xAbs, ky1 = (double)kid.y;
+    const double kx2 = (double)kid.xAbs + (double)kid.dx2, ky2 = (double)kid.y2;
+    for (const Obj* p : ports) {
+        if (!p) continue;
+        const int pt = p->type;
+        if (modePortalTarget(pt) < 0 && pt != 17 && pt != 18 && !isGravPortalType(pt)
+            && pt != 23 && pt != 24)
+            continue;
+        const double spanH = p->oriented ? std::max(p->hh, p->hw) : p->hh;
+        if (spanH <= 1.0) continue;
+        if (std::fabs(kx1 - p->cx) <= p->hw + half1 && bodyChanged(*p, false)) {
+            const double rel = std::fabs(ky1 - p->cy) / std::max(15.0, spanH);
+            if (rel > 0.45) pen += (int)std::lround((rel - 0.45) * 32.0);
+        }
+        if (kid.dual != 0 && std::fabs(kx2 - p->cx) <= p->hw + half2 && bodyChanged(*p, true)) {
+            const double rel = std::fabs(ky2 - p->cy) / std::max(15.0, spanH);
+            if (rel > 0.45) pen += (int)std::lround((rel - 0.45) * 32.0);
+        }
+    }
+    return pen;
+}
+
 inline int humanEffectiveTight(const State& s) {
     int sc = (int)s.tight;
     if (g_solveProfile == 3) {
@@ -1697,11 +1738,11 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                                 else if (age < 8)  addTight(miniWave ? 760  : 520); // >30 CPS tiny spam burst
                                 else if (age < 13) addTight(miniWave ? 320  : 210); // >18.5 CPS fast flutter
                                 else if (age < 18) addTight(miniWave ? 95   : 65);  // >13.3 CPS
-                            } else { // Ship (mode == 1): steady human tapping in corridors, clean unbroken holds on steep climbs
-                                addTight(24);
-                                if (age < 5)       addTight(290); // >24 CPS micro-spam
-                                else if (age < 8)  addTight(160); // >15 CPS spam burst
-                                else if (age < 12) addTight(55);  // >10 CPS flutter
+                            } else { // Ship (mode == 1): gentle human feathering, discourage >60 CPS micro-spam
+                                addTight(16);
+                                if (age < 4)       addTight(210); // >60 CPS micro-spam
+                                else if (age < 7)  addTight(85);  // >34 CPS spam burst
+                                else if (age < 10) addTight(22);  // >24 CPS rapid flutter
                             }
                         }
                     } else {
@@ -1778,6 +1819,27 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                             if (vyAbs > 4.5) addTight(1);
                         }
                     }
+                    const bool isFlying2 = (kid.s.mode2 == 1 || kid.s.mode2 == 3 || kid.s.mode2 == 4 || kid.s.mode2 == 7);
+                    const bool waveDBlockSlide2 = (kid.s.mode2 == 4 && kid.s.grounded2 != 0);
+                    if (kid.s.dual != 0 && isFlying2 && kid.s.frame == 0 && !waveDBlockSlide2) {
+                        const double kx2 = (double)kid.s.xAbs + (double)kid.s.dx2;
+                        const double ky2 = (double)kid.s.y2;
+                        const double half2 = playerHalf(kid.s.mode2, kid.s.mini2 != 0);
+                        const double look2 = (kid.s.rev ? -1.0 : 1.0) * (kid.s.mini2 ? 16.0 : 22.0) * speedScale;
+                        double span2 = 150.0;
+                        const double off2 = corridorOffCentre(near, slps, kx2, ky2, half2,
+                                                              (double)kid.s.bandFloor, (double)kid.s.bandCeil,
+                                                              kid.s.mini2 ? kWaveClampMini : kWaveClamp,
+                                                              look2, &span2);
+                        const double freeBand2 = (span2 < 95.0) ? (kid.s.mode2 == 1 ? 0.07 : 0.14)
+                                                                : (kid.s.mode2 == 1 ? 0.10 : (kid.s.mode2 == 4 ? 0.22 : 0.28));
+                        const double ex2 = std::max(0.0, std::fabs(off2) - freeBand2);
+                        if (ex2 > 0.0) {
+                            int pen2 = (int)(1.0 + (kid.s.mode2 == 1 ? 11.0 : (kid.s.mode2 == 4 ? 7.5 : 5.5)) * ex2 * ex2);
+                            if (kid.s.mode2 == 4 && std::fabs(off2) > 0.42) pen2 += 2;
+                            addTight(pen2);
+                        }
+                    }
 
                     // 3. Smooth vertical control in Ship & Swing (avoid violent last-tick dive-bombs):
                     if ((kid.s.mode == 1 || kid.s.mode == 7) && !kid.s.dashing) {
@@ -1801,6 +1863,22 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                         else
                             addTight(kid.s.mode == 4 ? 2 : 1);
                     }
+                    if (kid.s.dual != 0 && !waveDBlockSlide2 && kid.s.grounded2 == 0 && kid.s.mode2 != 6) {
+                        const double kx2 = (double)kid.s.xAbs + (double)kid.s.dx2;
+                        const double ky2 = (double)kid.s.y2;
+                        const double half2 = playerHalf(kid.s.mode2, kid.s.mini2 != 0);
+                        const double mScale2 = kid.s.mini2 ? 0.65 : 1.0;
+                        const double sEps2 = (kid.s.mode2 == 4 ? 4.5 * speedScale : 2.0 * speedScale) * mScale2;
+                        const double sOut2 = (kid.s.mode2 == 4 ? 17.5 : 13.0) * mScale2;
+                        const double sIn2  = (kid.s.mode2 == 4 ? 8.5  : 5.5)  * mScale2;
+                        const bool flp2 = (kid.s.flip2 != 0);
+                        if (humanSolidTightHere(near, slps, kx2, ky2, half2, sOut2, sEps2, false, flp2)) {
+                            if (humanSolidTightHere(near, slps, kx2, ky2, half2, sIn2, sEps2, false, flp2))
+                                addTight(kid.s.mode2 == 4 ? 4 : 3);
+                            else
+                                addTight(kid.s.mode2 == 4 ? 2 : 1);
+                        }
+                    }
 
                     // 5. Safety cushion from lethal hazards (spikes, saws, spiked slopes):
                     //    Includes spiked slopes in `slps` and speed-scaled horizontal lookahead so Wave stays
@@ -1813,6 +1891,21 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                             addTight(5);
                         else
                             addTight(2);
+                    }
+                    if (kid.s.dual != 0) {
+                        const double kx2 = (double)kid.s.xAbs + (double)kid.s.dx2;
+                        const double ky2 = (double)kid.s.y2;
+                        const double half2 = playerHalf(kid.s.mode2, kid.s.mini2 != 0);
+                        const double mScale2 = kid.s.mini2 ? 0.65 : 1.0;
+                        const double hEps2 = (kid.s.mode2 == 4 ? 4.5 * speedScale : 2.0 * speedScale) * mScale2;
+                        const double hOut2 = (kid.s.mode2 == 4 ? 25.0 : 22.0) * mScale2;
+                        const double hIn2  = (kid.s.mode2 == 4 ? 12.0 : 9.5)  * mScale2;
+                        if (hazardTightHere(near, slps, kx2, ky2, half2, hOut2, hEps2)) {
+                            if (hazardTightHere(near, slps, kx2, ky2, half2, hIn2, hEps2))
+                                addTight(5);
+                            else
+                                addTight(2);
+                        }
                     }
 
                     // 5b. Safety cushion when jumping/flying over unactivated jump pads:
@@ -1857,17 +1950,27 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                             }
                         }
                     }
-                    if (s.dual != 0 && s.grounded2 && (s.mode2 == 0 || s.mode2 == 2 || s.mode2 == 5)) {
+                    if (s.dual != 0 && s.grounded2 && (s.mode2 == 0 || s.mode2 == 2 || s.mode2 == 5 || s.mode2 == 6)) {
                         const double sc2 = std::max(1.0, (double)((s.dx2 > 0.f) ? s.dx2 : 1.298f) / 1.298);
                         const double half2 = playerHalf(s.mode2, s.mini2 != 0);
-                        const bool initiatedJump2 = (s.mode2 == 2)
-                                                        ? (input == 1 && s.action == 0)
-                                                        : (input == 1);
-                        if (initiatedJump2 && kid.s.usedOrb2 == nullptr) {
-                            const int jumpPen2 = groundJumpTimingPenalty(
-                                near, slps, pads, (double)s.xAbs + (double)s.dx2, (double)s.y2, half2, sc2, s.rev != 0, s.flip2 != 0,
-                                nearSlice, dyn);
-                            if (jumpPen2 > 0) addTight(jumpPen2);
+                        if (s.mode2 == 6) {
+                            const double kx2 = (double)kid.s.xAbs + (double)kid.s.dx2;
+                            const double ky2 = (double)kid.s.y2;
+                            const bool spiderTp2 = (std::fabs(ky2 - (double)s.y2) > 8.0);
+                            const int spPen2 = spiderHumanTimingPenalty(
+                                near, slps, kx2, (double)s.y2, ky2, half2, sc2, s.rev != 0, spiderTp2,
+                                (double)kid.s.bandFloor, (double)kid.s.bandCeil);
+                            if (spPen2 > 0) addTight(spPen2);
+                        } else {
+                            const bool initiatedJump2 = (s.mode2 == 2)
+                                                            ? (input == 1 && s.action == 0)
+                                                            : (input == 1);
+                            if (initiatedJump2 && kid.s.usedOrb2 == nullptr) {
+                                const int jumpPen2 = groundJumpTimingPenalty(
+                                    near, slps, pads, (double)s.xAbs + (double)s.dx2, (double)s.y2, half2, sc2, s.rev != 0, s.flip2 != 0,
+                                    nearSlice, dyn);
+                                if (jumpPen2 > 0) addTight(jumpPen2);
+                            }
                         }
                     }
 
@@ -1917,9 +2020,19 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                     //        branch dies to the trap and the portal-dodging branch survives and clears the level!
                     if (const int portPen = humanPortalSkipPenalty(s, kid.s, ports, env.spds, half); portPen > 0) {
                         addTight(portPen);
+                        // Squeezing close to a hazard to dodge a state-changing portal is a swag/glitch route.
+                        if (hazardTightHere(near, slps, kx, ky, half, 14.0 * mScale, 3.0 * speedScale)) {
+                            addTight(200000);
+                        }
                     }
                     if (const int spamPen = humanWavePortalSpamPenalty(s, kid.s, input, ports, half); spamPen > 0) {
                         addTight(spamPen);
+                    }
+                    {
+                        const double half2 = kid.s.dual != 0 ? playerHalf(kid.s.mode2, kid.s.mini2 != 0) : half;
+                        if (const int portCtrPen = humanPortalCenterPenalty(s, kid.s, ports, half, half2); portCtrPen > 0) {
+                            addTight(portCtrPen);
+                        }
                     }
                 } else if (g_solveProfile == 4) { // Centerline: true corridor centering for all flying modes + clearance
                     if (isFlying && kid.s.frame == 0) {
@@ -2243,8 +2356,13 @@ inline int searchLayers(E& e, const Rules& rules, SearchResult& out) {
                                 r.loVy = vy;
                                 accepted = true;
                             } else if (r.bOrd != kNone
-                                       && (extVy > loExtVy + 1e-9
-                                           || (std::fabs(extVy - loExtVy) <= 1e-9 && betterIdx(i, r.loIdx)))) {
+                                       && (g_solveProfile == 3
+                                               ? (extVy > loExtVy + 0.75
+                                                  || (std::fabs(extVy - loExtVy) <= 0.75
+                                                      && betterIdx(i, r.loIdx)))
+                                               : (extVy > loExtVy + 1e-9
+                                                  || (std::fabs(extVy - loExtVy) <= 1e-9
+                                                      && betterIdx(i, r.loIdx))))) {
                                 r.loIdx = i;
                                 r.loVy = vy;
                                 accepted = true;
