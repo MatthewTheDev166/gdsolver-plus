@@ -1912,6 +1912,7 @@ inline int cliMainOnce(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--wavetidy")) g_waveTidy = std::atof(argv[i + 1]);
         if (!std::strcmp(argv[i], "--wavetoggle")) g_waveToggle = std::atoi(argv[i + 1]);
         if (!std::strcmp(argv[i], "--profile")) g_solveProfile = std::atoi(argv[i + 1]);
+        if (!std::strcmp(argv[i], "--goalx")) g_customGoalX = std::atof(argv[i + 1]);
         if (!std::strcmp(argv[i], "--startedge")) g_startEdge = std::atoi(argv[i + 1]);
     }
     for (int i = 2; i < argc; ++i)
@@ -6184,6 +6185,10 @@ inline int cliMainOnce(int argc, char** argv) {
         std::printf("goalgd: end portal x %.2f, zoom %.3f -> goal %.2f (L.maxX + 60 = %.2f)\n",
                     g_endPortalX, zoom, gdGoal, goalX);
         goalX = gdGoal;
+    }
+    if (g_customGoalX > 0.0) {
+        goalX = g_customGoalX;
+        std::printf("goalx: custom goal %.2f (L.maxX + 60 = %.2f)\n", goalX, L.maxX + 60.0);
     }
     g_goalX = goalX;   // --goalspare (speed.hpp)
     // ---- --coins: route through the level's coins as well as to its end -----

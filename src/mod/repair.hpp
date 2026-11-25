@@ -3111,6 +3111,10 @@ inline std::vector<std::string> baseArgs(const std::string& out,
         a.push_back("--profile");
         a.push_back(std::to_string(g_cfg.solveProfile));
     }
+    if (g_cfg.partialRange && g_cfg.goalStopX > 0.f) {
+        a.push_back("--goalx");
+        a.push_back(std::to_string(g_cfg.goalStopX));
+    }
     addWorldArgs(a);
     // cfg dprejoinwatch: the model's trace of the plan that last died,
     // for dp's --rejoinwatch (refwatch.hpp).
@@ -9619,7 +9623,8 @@ inline bool levelHasMovingParts() {
 // inputs and no dying, to see what the level does on its own. The reset happens at the next
 // frame boundary (poll), like every other level change here.
 inline bool startBootstrapRecord() {
-    const bool spawnOnly = !levelHasMovingParts() && solver::g_levelTwoPlayer;
+    const bool partialSpawn = (g_cfg.partialRange && g_cfg.startPosIdx >= 0);
+    const bool spawnOnly = !levelHasMovingParts() && (solver::g_levelTwoPlayer || partialSpawn);
     if (!levelHasMovingParts() && !spawnOnly) return false;
     g_bootSpawnOnly = spawnOnly;
     g_recordKind = RecBootstrap;
@@ -10510,6 +10515,89 @@ inline void poll() {
                  "it in the game", sec, g_plan.size());
         notify::show(note, NotificationIcon::Info, 4.f);
     }
+}
+
+/// Save the deepest GD-verified partial plan and exit cleanly to the level screen (Hold Right Ctrl).
+inline bool savePartialAndQuit() {
+    if (!g_cfg.dpSolve || g_sessionOver) return false;
+    g_stop = true;
+    dpbridge::cancelSearch(false);
+    g_dpSolving = false;
+
+    std::vector<InputCmd> partial;
+    long long stopTick = -1;
+    float stopX = g_hudVerifiedX;
+    bool tookLiveFlight = false;
+
+    auto* pl = PlayLayer::get();
+    const float liveX = (pl && pl->m_player1) ? pl->m_player1->getPositionX() : 0.f;
+
+    if (!g_dpShowSolution && !g_recordAttempt && g_tick > 10 && g_tick > g_bestDeath
+        && !g_cfg.inputs.empty() && liveX > 0.f) {
+        stopTick = g_tick;
+        stopX = std::max(stopX, liveX);
+        tookLiveFlight = true;
+        for (const InputCmd& c : g_cfg.inputs) {
+            if (c.step < stopTick) partial.push_back(c);
+        }
+    } else if (g_bestDeath > 0 && !g_best.empty()) {
+        stopTick = g_bestDeath;
+        stopX = std::max(stopX, g_bestDeathX);
+        for (const InputCmd& c : g_best) {
+            if (c.step < stopTick) partial.push_back(c);
+        }
+    }
+
+    std::string toastMsg;
+    bool savedOk = false;
+    if (!partial.empty() && stopTick > 0) {
+        char name[128];
+        snprintf(name, sizeof(name),
+                 g_cfg.coinFiles ? "%s/solution_lv%d_coins.txt"
+                                 : "%s/solution_lv%d_dp.txt",
+                 DATA_DIR, g_cfg.levelId);
+        if (writeInputsFile(name, partial)) {
+            writeSolvedWith(name, Mod::get()->getVersion().toVString());
+            float pct = 0.f;
+            if (pl && pl->m_levelLength > 1.f) {
+                pct = std::clamp(stopX / pl->m_levelLength * 100.f, 0.f, 99.9f);
+            }
+            SolutionRange sr;
+            sr.partial = g_cfg.partialRange;
+            sr.earlyExit = true;
+            sr.active = true;
+            sr.startIdx = g_cfg.startPosIdx;
+            sr.endIdx = g_uiGoalStopIdx;
+            sr.startX = g_spawnRow.valid ? g_spawnRow.x : 0.f;
+            sr.endX = tookLiveFlight
+                ? ((g_cfg.goalStopX > 0.f) ? std::min(g_cfg.goalStopX, stopX) : stopX)
+                : g_cfg.goalStopX;
+            sr.stopPct = pct;
+            writeSolutionRange(name, sr);
+            itermap::save(g_cfg.levelId, false);
+            savedOk = true;
+            const bool sliced = (levelslice::g_phase == levelslice::Sliced);
+            char msg[192];
+            snprintf(msg, sizeof(msg),
+                     "gdsolver: saved partial solve (~%.1f%%, %zu inputs)%s",
+                     (double)pct, partial.size(), sliced ? " [slice]" : "");
+            toastMsg = msg;
+            writeResult(std::string("dpsolve: early save & quit -> ") + name
+                        + " (tick=" + std::to_string(stopTick) + " x=" + std::to_string((int)stopX) + ")");
+        }
+    }
+    if (!savedOk) {
+        toastMsg = "gdsolver: no verified clicks to save yet - exited";
+        writeResult("dpsolve: early quit with no verified inputs to save");
+    }
+
+    endSession("user_quit_hotkey");
+    Loader::get()->queueInMainThread([toastMsg, savedOk]() {
+        notify::show(toastMsg,
+                     savedOk ? NotificationIcon::Success : NotificationIcon::Warning,
+                     4.5f);
+    });
+    return savedOk;
 }
 
 }  // namespace dpsolve

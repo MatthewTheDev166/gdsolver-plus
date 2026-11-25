@@ -7558,6 +7558,23 @@ class $modify(GJBaseGameLayer) {
             }
             s_prev = st;
         }
+        // Partial range end cutoff: Finish at a selected StartPos (g_cfg.goalStopX > 0).
+        // During Solve verification, passing goalStopX completes the run cleanly; during
+        // Replay (or the Solve showing pass), passing it kills the player right at the spot.
+        if (g_started && !g_sessionOver && !secsolve::g_active && !secsolve::inFlight()
+            && g_cfg.partialRange && g_cfg.goalStopX > 0.f && m_player1 && !m_player1->m_isDead
+            && g_tick > 2 && m_player1->getPositionX() >= g_cfg.goalStopX) {
+            if (auto* pl = PlayLayer::get(); pl && !pl->m_hasCompletedLevel) {
+                if (g_cfg.dpSolve && !g_dpShowSolution) {
+                    if (!pl->m_levelEndAnimationStarted) {
+                        pl->m_levelEndAnimationStarted = true;
+                        pl->levelComplete();
+                    }
+                } else {
+                    pl->destroyPlayer(m_player1, m_player1);
+                }
+            }
+        }
         // Our own coin pickup test: a coordinate hit within a conservative radius counts
         // as picked up and the pickup tick is recorded (independent of GD's in-checkpoint
         // coin state. On a checkpoint restore, pickups after the restore tick are voided)

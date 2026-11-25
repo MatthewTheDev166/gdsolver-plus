@@ -211,6 +211,8 @@ inline double g_waveTidy = 0.0;
 inline int g_waveToggle = 0;
 // --profile <n>: 0 Normal, 1 Min Clicks, 2 Max Clicks, 3 Human, 4 Centerline, 5 Close-Call
 inline int g_solveProfile = 0;
+// --goalx <X>: override goal X coordinate for partial-range solves (-1 = full level end)
+inline double g_customGoalX = -1.0;
 //   --startedge <ticks>  an anchored call: the ticks the button had already been in its present state at the anchor
 //                        (State::edgeAge of the start state; -1 = not said, which leaves it at "long ago"). The mod
 //                        reads it off the plan the game flew, so --wavepulse / --minpulse hold across a re-anchor.

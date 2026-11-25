@@ -296,6 +296,46 @@ inline std::string readSolvedWith(const std::string& solutionPath) {
     return v;
 }
 
+// Sidecar (<solution>.range) storing whether a saved solution was solved as a partial/StartPos
+// run or saved early via Hold Right Ctrl, so Replay automatically spawns at the right StartPos
+// and stops/dies at the cutoff X.
+struct SolutionRange {
+    bool active = false;
+    bool partial = false;
+    bool earlyExit = false;
+    int startIdx = -1;
+    int endIdx = -1;
+    float startX = 0.f;
+    float endX = -1.f;
+    float stopPct = 0.f;
+};
+inline std::string solutionRangePath(const std::string& solutionPath) { return solutionPath + ".range"; }
+inline void writeSolutionRange(const std::string& solutionPath, const SolutionRange& r) {
+    if (!r.active && !r.partial && !r.earlyExit) {
+        std::error_code ec;
+        std::filesystem::remove(solutionRangePath(solutionPath), ec);
+        return;
+    }
+    std::ofstream f(solutionRangePath(solutionPath), std::ios::trunc);
+    if (!f) return;
+    f << (r.partial ? 1 : 0) << "," << (r.earlyExit ? 1 : 0) << ","
+      << r.startIdx << "," << r.endIdx << "," << r.startX << "," << r.endX << "," << r.stopPct << "\n";
+}
+inline SolutionRange readSolutionRange(const std::string& solutionPath) {
+    SolutionRange r;
+    std::ifstream f(solutionRangePath(solutionPath));
+    std::string ln;
+    if (!f || !std::getline(f, ln)) return r;
+    int part = 0, early = 0;
+    if (sscanf(ln.c_str(), "%d,%d,%d,%d,%f,%f,%f",
+               &part, &early, &r.startIdx, &r.endIdx, &r.startX, &r.endX, &r.stopPct) >= 6) {
+        r.partial = (part != 0);
+        r.earlyExit = (early != 0);
+        r.active = r.partial || r.earlyExit;
+    }
+    return r;
+}
+
 // ============================================================
 // Analysis directives that piggyback on the plan (`inject=` / `stopat=` lines in plan_in.txt)
 //

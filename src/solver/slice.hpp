@@ -302,6 +302,7 @@ inline Cut cut(const std::string& raw, const std::vector<LiveObj>& live, const O
     // outside them (see the note at the top).
     std::vector<char> inert(c.objs.size(), 0);
     size_t orderedKept = 0;
+    constexpr int kStartPosId = 31;
     if (opt.dropTriggers) {
         std::unordered_set<int> R, ordered;
         for (const auto& o : live) {
@@ -338,7 +339,7 @@ inline Cut cut(const std::string& raw, const std::vector<LiveObj>& live, const O
         }
         for (size_t i = 0; i < c.objs.size(); ++i) {
             const StrObj& o = c.objs[i];
-            if (typeOfObj(o) != kTypeTrigger || extent.count(o.idx) || !actsOutside(o)) continue;
+            if (o.id == kStartPosId || typeOfObj(o) != kTypeTrigger || extent.count(o.idx) || !actsOutside(o)) continue;
             if (std::any_of(o.groups.begin(), o.groups.end(),
                             [&](int g) { return ordered.count(g) > 0; })) {
                 ++orderedKept;
@@ -363,6 +364,7 @@ inline Cut cut(const std::string& raw, const std::vector<LiveObj>& live, const O
         else if (t < 0) why = "keep:unmapped";
         else if (t != kTypeDecoration) why = "keep:gameplay";
         else if (o.id == kKeyframePoint) why = "keep:keyframe-point";
+        else if (o.id == kStartPosId) why = "keep:start-pos";
         else if (extent.count(o.idx)) why = "keep:deco-extent";
         else if (opt.positions && std::any_of(o.groups.begin(), o.groups.end(),
                                               [&](int g) { return refG.count(g) > 0; }))

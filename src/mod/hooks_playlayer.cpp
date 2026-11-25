@@ -277,6 +277,41 @@ class $modify(PlayLayer) {
                     + (held ? "" : " (it was not built under the level's type)"));
     }
 
+    static StartPosObject* resolvePartialStartPos(PlayLayer* pl) {
+        if (!pl || !pl->m_objects || !g_cfg.partialRange || g_cfg.startPosIdx < 0) return nullptr;
+        std::vector<StartPosObject*> list;
+        for (auto* o : CCArrayExt<GameObject*>(pl->m_objects)) {
+            if (auto* sp = geode::cast::typeinfo_cast<StartPosObject*>(o)) list.push_back(sp);
+        }
+        std::sort(list.begin(), list.end(), [](StartPosObject* a, StartPosObject* b) {
+            return a->getPositionX() < b->getPositionX();
+        });
+        if (g_cfg.startPosIdx < (int)list.size()) return list[g_cfg.startPosIdx];
+        return nullptr;
+    }
+
+    static bool applyPartialStartPos(PlayLayer* pl) {
+        if (!pl || !g_started) return false;
+        StartPosObject* tgt = g_cfg.partialRange ? resolvePartialStartPos(pl) : nullptr;
+        if (tgt && tgt->m_startSettings) {
+            tgt->m_startSettings->m_disableStartPos = false;
+        }
+        if (pl->m_startPosObject != tgt) {
+            pl->setStartPosObject(tgt);
+            if (tgt) pl->loadStartPosObject();
+            return true;
+        }
+        return false;
+    }
+
+    void setupHasCompleted() {
+        PlayLayer::setupHasCompleted();
+        if (this != PlayLayer::get() || !g_started) return;
+        if (applyPartialStartPos(this)) {
+            PlayLayer::resetLevel();
+        }
+    }
+
     // The layer leaves its scene (the slice swap, the next level of a suite, the way out of a level): the sprites that follow its objects stop their
     // actions while the objects are still there (stopFollowerActions, helpers_game.hpp). The action manager keeps such a sprite alive past the layer,
     // and the sprite's call on itself reads the freed object (2.2091, the two-player custom MK2, 2026-10-20).
@@ -589,6 +624,9 @@ class $modify(PlayLayer) {
             if (g_cfg.windowGuard && g_started && !g_sessionOver && !ckptRestore && !cpflight::g_starting
                 && !takeover::g_restoring)
                 windowguard::enforce("attempt", false, [](const std::string& s) { writeResult(s); });
+            if (g_started && !g_sessionOver && !ckptRestore && !cpflight::g_starting
+                && !takeover::g_restoring)
+                applyPartialStartPos(this);
             PlayLayer::resetLevel();
             g_resetMarkLayer = this;
             g_resetMarkPc = g_pcCalls;
@@ -1415,7 +1453,8 @@ class $modify(PlayLayer) {
                 && levelslice::g_phase != levelslice::Sliced
                 && levelslice::g_phase != levelslice::RefFlight
                 && (goal - cx) > g_clearMargin
-                && this->getCurrentPercent() < 95.0f && !endTrigLevel) {
+                && this->getCurrentPercent() < 95.0f && !endTrigLevel
+                && !(g_cfg.partialRange && g_cfg.goalStopX > 0.f && cx >= g_cfg.goalStopX - 2.f)) {
                 char fb[256];
                 snprintf(fb, sizeof(fb),
                     "dpsolve: refusing a clear %.0fpx short of the goal (x=%.0f goal=%.0f "
@@ -1483,6 +1522,15 @@ class $modify(PlayLayer) {
                 if (writeInputsFile(name, g_cfg.inputs)) {
                     // ...and which version solved it, for the play menu (solvedWithPath).
                     writeSolvedWith(name, Mod::get()->getVersion().toVString());
+                    SolutionRange sr;
+                    sr.partial = g_cfg.partialRange;
+                    sr.earlyExit = false;
+                    sr.startIdx = g_cfg.startPosIdx;
+                    sr.endIdx = g_uiGoalStopIdx;
+                    sr.startX = 0.f;
+                    sr.endX = g_cfg.goalStopX;
+                    sr.stopPct = this->getCurrentPercent();
+                    writeSolutionRange(name, sr);
                     writeResult(std::string("dpsolve: solution saved -> ") + name);
                     notify::show("gdsolver: solution saved", NotificationIcon::Success, 3.f);
                 }

@@ -200,6 +200,11 @@ inline const char* describeProfile(int p) {
 }
 
 inline int g_uiProfile = PROFILE_NORMAL;
+// Partial / StartPos range selections from Solve Options (hooks_playmenu.cpp).
+inline bool g_uiPartialRange = false;
+inline int g_uiStartPosIdx = -1;   // -1 = Level Start (0%), >= 0 = StartPos #k sorted by x
+inline float g_uiGoalStopX = -1.f; // > 0 = Finish StartPos world X (-1 = Level End 100%)
+inline int g_uiGoalStopIdx = -1;   // -1 = Level End (100%), >= 0 = StartPos #k sorted by x
 // The level the menu's Start was pressed for. PlayLayer::init starts a session only for this
 // level, and disarms it whatever it decides: the choice is made per play, not left standing.
 // A standing mode is what the old corner panel had, and there it was visible; a menu that has

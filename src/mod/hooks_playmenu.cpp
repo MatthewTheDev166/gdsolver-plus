@@ -94,6 +94,8 @@ struct LevelFacts {
     // Reads the attempt count or keeps items across attempts, but only what is shown depends on it
     // (levelwarn::attemptReachesPlay): no note, a line in the log.
     bool attemptShown = false;
+    float maxX = 0.f;
+    std::vector<float> startPosXs;
 };
 
 // The key's value in a "k,v,k,v" run, or empty.
@@ -169,8 +171,18 @@ inline LevelFacts readLevel(GJGameLevel* level, bool mainLevel) {
         const auto id = valueOf(obj, "1");
         if (id == "142" || id == "1329") ++f.coins;
         if (!f.random && isRandomObject(obj, id)) f.random = true;
+        const auto xs = valueOf(obj, "2");
+        if (!xs.empty()) {
+            char* ep = nullptr;
+            const float x = std::strtof(std::string(xs).c_str(), &ep);
+            if (ep != nullptr && ep != xs.data() && std::isfinite(x)) {
+                if (x > f.maxX) f.maxX = x;
+                if (id == "31") f.startPosXs.push_back(x);
+            }
+        }
         pos = end;
     }
+    std::sort(f.startPosXs.begin(), f.startPosXs.end());
     const auto w = levelwarn::scan(all, f.platformer);
     f.unmodelled = w.unmodelled;
     f.newer = w.newer;
@@ -291,6 +303,22 @@ inline std::vector<std::string> secSolveDetails() {
     return {std::string("On (default): ") + describeSecSolve(true), std::string("Off: ") + describeSecSolve(false)};
 }
 
+inline std::vector<std::string> partialRangeDetails() {
+    return {"Off (default): solves and replays the full level from 0% to 100%, ignoring StartPos placements.",
+            "On: lets you choose a StartPos (or Level Start) to start from and a later StartPos (or Level End) to stop at.",
+            "Greyed out when the level has no StartPos objects."};
+}
+
+inline std::vector<std::string> startAtDetails() {
+    return {"Where the solver and replay begin the run: Level Start (0%) or any StartPos sorted left to right.",
+            "Only active when Partial range is checked."};
+}
+
+inline std::vector<std::string> finishAtDetails() {
+    return {"Where the solver and replay finish: a StartPos strictly after Start at, or Level End (100%).",
+            "Replaying a partial range stops (dies) once passing the Finish StartPos."};
+}
+
 // What an (i) button opens: the detail in a small popup whose text scrolls when it is longer than the
 // window (the game's own alert grows with its text and runs off the screen on the longer ones).
 // The geometry, all in the popup's own units (the numbers a port to other UI parts needs):
@@ -393,8 +421,8 @@ inline void showInfo(const char* title, const std::vector<std::string>& paragrap
 // page's. Solve faster is not a setting at all any more (cfg dpplainbeside=3 still starts it).
 class Options : public PopupBase {
 public:
-    using Change = std::function<void(int, int, bool)>;   // glitch mode, search, section search
-    using ReplayChange = std::function<void(bool)>;        // the Replay form: fixed replay step on or off
+    using Change = std::function<void(int, int, bool, bool, int, int)>;   // glitch, search, secSolve, partialRange, startIdx, finishIdx
+    using ReplayChange = std::function<void(bool)>;                       // the Replay form: fixed replay step on or off
     // The form a Replay has: the fixed replay step and the Hold Play row; the choices about how Solve searches are not in it.
     static Options* createReplay(bool replayStep, ReplayChange onChange) {
         auto* r = new Options();
@@ -403,9 +431,15 @@ public:
         delete r;
         return nullptr;
     }
-    static Options* create(int glitch, int search, bool secSolve, Change onChange) {
+    static Options* create(int glitch, int search, bool secSolve,
+                           bool partialRange, int startPosIdx, int finishPosIdx,
+                           float maxX, std::vector<float> startPosXs, Change onChange) {
         auto* r = new Options();
-        if (r->init(glitch, search, secSolve, std::move(onChange))) { r->autorelease(); return r; }
+        if (r->init(glitch, search, secSolve, partialRange, startPosIdx, finishPosIdx,
+                    maxX, std::move(startPosXs), std::move(onChange))) {
+            r->autorelease();
+            return r;
+        }
         delete r;
         return nullptr;
     }
@@ -414,6 +448,11 @@ protected:
     int m_glitch = UI_GLITCH_OFF;
     int m_search = UI_SEARCH_DP;
     bool m_secSolve = true;
+    bool m_partialRange = false;
+    int m_startPosIdx = -1;
+    int m_finishPosIdx = -1;
+    float m_maxX = 0.f;
+    std::vector<float> m_startPosXs;
     bool m_replayForm = false;
     bool m_replayStep = false;
     ReplayChange m_onReplay;
@@ -421,9 +460,19 @@ protected:
     Change m_onChange;
     CCMenuItemToggler* m_secToggle = nullptr;
     CCMenuItemToggler* m_menuToggle = nullptr;
+    CCMenuItemToggler* m_partialToggle = nullptr;
+    cocos2d::CCLabelBMFont* m_partialLabel = nullptr;
     cocos2d::CCLabelBMFont* m_menuNote = nullptr;
     cocos2d::CCLabelBMFont* m_glitchValue = nullptr;
     cocos2d::CCLabelBMFont* m_searchValue = nullptr;
+    cocos2d::CCLabelBMFont* m_startAtTitle = nullptr;
+    cocos2d::CCLabelBMFont* m_startAtValue = nullptr;
+    CCMenuItemSpriteExtra* m_startAtLeft = nullptr;
+    CCMenuItemSpriteExtra* m_startAtRight = nullptr;
+    cocos2d::CCLabelBMFont* m_finishAtTitle = nullptr;
+    cocos2d::CCLabelBMFont* m_finishAtValue = nullptr;
+    CCMenuItemSpriteExtra* m_finishAtLeft = nullptr;
+    CCMenuItemSpriteExtra* m_finishAtRight = nullptr;
     cocos2d::CCLabelBMFont* m_exportPathLabel = nullptr;
 
     static std::string getExportFolderPath() {
@@ -439,12 +488,33 @@ protected:
         Mod::get()->setSavedValue<std::string>("export-path", p);
     }
 
-    // Top to bottom: the title; the Section search row; Avoid glitches (title, value between arrows); Search (the same); the Hold Play row and,
-    // when it is checked, its note; OK. 284 high, inside GD's design height (320; the popup's close button rises above its frame).
-    static constexpr float kW = 300.f, kH = 284.f;
+    static constexpr float kW = 300.f, kSolveW = 336.f, kSolveH = 398.f;
 
+    float fitScale() const {
+        const float winH = cocos2d::CCDirector::sharedDirector()->getWinSize().height;
+        const float h = m_mainLayer->getContentSize().height;
+        const float btnH = m_closeBtn ? m_closeBtn->getScaledContentSize().height : 30.f;
+        const float over = std::max(0.f, btnH / 2.f - 3.f);
+        const float half = h / 2.f + over;
+        const float room = winH / 2.f - 6.f;
+        return (half > room && half > 0.f) ? room / half : 1.f;
+    }
+
+public:
+    void show() override {
+        PopupBase::show();
+        const float s = fitScale();
+        if (s >= 1.f) return;
+        using namespace cocos2d;
+        m_mainLayer->stopAllActions();
+        m_mainLayer->setScale(0.1f * s);
+        m_mainLayer->runAction(CCEaseElasticOut::create(CCScaleTo::create(0.5f, s), 0.6f));
+    }
+
+protected:
     // A checkbox with its label and its (i) button, the three centred as a row (as the menu's rows are).
-    CCMenuItemToggler* addToggleRow(const char* id, const char* text, float y, bool on, cocos2d::SEL_MenuHandler handler, int infoWhat) {
+    CCMenuItemToggler* addToggleRow(const char* id, const char* text, float y, bool on, cocos2d::SEL_MenuHandler handler, int infoWhat,
+                                    cocos2d::CCLabelBMFont** labelOut = nullptr) {
         using namespace cocos2d;
         auto* toggle = CCMenuItemToggler::createWithStandardSprites(this, handler, .6f);
         toggle->toggle(on);
@@ -460,6 +530,7 @@ protected:
         ui::addChildAtPosition(m_buttonMenu, toggle, Anchor::Top, ccp(left + boxW / 2.f, y));
         ui::addChildAtPosition(m_mainLayer, label, Anchor::Top, ccp(left + boxW + gap, y));
         infoButton(id, left + boxW + gap + labelW + infoGap, y, infoWhat);
+        if (labelOut) *labelOut = label;
         return toggle;
     }
 
@@ -477,7 +548,10 @@ protected:
     // A choice between names: its title (with its (i) button), and its value between two arrows (as the
     // game's own resolution choice is). The arrows' tag is the direction.
     cocos2d::CCLabelBMFont* choiceRow(const char* title, const char* id, float y, cocos2d::SEL_MenuHandler onArrow,
-                                      cocos2d::CCLabelBMFont*& value, int infoWhat) {
+                                      cocos2d::CCLabelBMFont*& value, int infoWhat,
+                                      CCMenuItemSpriteExtra** leftOut = nullptr,
+                                      CCMenuItemSpriteExtra** rightOut = nullptr,
+                                      float arrowX = 95.f) {
         using namespace cocos2d;
         // node ids carry the mod's id, as `"..."_spr` does for a literal
         const std::string base = std::string(Mod::get()->getID()) + "/" + id;
@@ -496,7 +570,9 @@ protected:
             auto* btn = CCMenuItemSpriteExtra::create(spr, this, onArrow);
             btn->setTag(dir);
             btn->setID((base + (dir < 0 ? "-left" : "-right")).c_str());
-            ui::addChildAtPosition(m_buttonMenu, btn, Anchor::Top, ccp(95.f * dir, y - 24.f));
+            ui::addChildAtPosition(m_buttonMenu, btn, Anchor::Top, ccp(arrowX * dir, y - 24.f));
+            if (dir < 0 && leftOut) *leftOut = btn;
+            if (dir > 0 && rightOut) *rightOut = btn;
         }
         return t;
     }
@@ -626,37 +702,101 @@ protected:
         if (m_onReplay) m_onReplay(m_replayStep);
     }
 
-    bool init(int glitch, int search, bool secSolve, Change onChange) {
+    bool init(int glitch, int search, bool secSolve,
+              bool partialRange, int startPosIdx, int finishPosIdx,
+              float maxX, std::vector<float> startPosXs, Change onChange) {
         using namespace cocos2d;
-        if (!PopupBase::init(kW, kH)) return false;
+        if (!PopupBase::init(kSolveW, kSolveH)) return false;
         this->setID("play-menu-options"_spr);
         m_glitch = std::clamp(glitch, 0, UI_GLITCH_COUNT - 1);
         m_search = std::clamp(search, 0, UI_SEARCH_COUNT - 1);
         m_secSolve = secSolve;
+        m_maxX = maxX;
+        m_startPosXs = std::move(startPosXs);
+        m_partialRange = partialRange && !m_startPosXs.empty();
+        m_startPosIdx = startPosIdx;
+        m_finishPosIdx = finishPosIdx;
+        clampRange();
         m_onChange = std::move(onChange);
         this->setTitle("Options");
 
-        m_secToggle = addToggleRow("section-search", "Section search", -50.f, m_secSolve, menu_selector(Options::onSecSolve), 0);
-        choiceRow("Avoid glitches", "glitch", -86.f, menu_selector(Options::onGlitch), m_glitchValue, 1);
-        choiceRow("Search", "search", -146.f, menu_selector(Options::onSearch), m_searchValue, 2);
+        m_secToggle = addToggleRow("section-search", "Section search", -46.f, m_secSolve, menu_selector(Options::onSecSolve), 0);
+        choiceRow("Avoid glitches", "glitch", -76.f, menu_selector(Options::onGlitch), m_glitchValue, 1);
+        choiceRow("Search", "search", -132.f, menu_selector(Options::onSearch), m_searchValue, 2);
         // The setting is stored as "play-menu" (on: a click on Play opens the menu); this row is its inverse, "hold Play to open the
         // menu", checked when the setting is off.
-        m_menuToggle = addToggleRow("menu", "Hold Play to open this menu", -204.f, !Mod::get()->getSettingValue<bool>("play-menu"),
+        m_menuToggle = addToggleRow("menu", "Hold Play to open this menu", -188.f, !Mod::get()->getSettingValue<bool>("play-menu"),
                                     menu_selector(Options::onMenuSetting), 3);
         m_menuNote = CCLabelBMFont::create("", "chatFont.fnt");
         m_menuNote->setScale(.55f);
         m_menuNote->setColor(kWarnYellow);
         m_menuNote->setID("menu-note"_spr);
-        ui::addChildAtPosition(m_mainLayer, m_menuNote, Anchor::Top, ccp(0, -222.f));
+        ui::addChildAtPosition(m_mainLayer, m_menuNote, Anchor::Top, ccp(0, -206.f));
+
+        m_partialToggle = addToggleRow("partial-range", "Partial range", -224.f, m_partialRange,
+                                       menu_selector(Options::onPartialRange), 5, &m_partialLabel);
+        m_startAtTitle = choiceRow("Start at", "start-at", -254.f, menu_selector(Options::onStartAt),
+                                   m_startAtValue, 6, &m_startAtLeft, &m_startAtRight, 108.f);
+        m_finishAtTitle = choiceRow("Finish at", "finish-at", -310.f, menu_selector(Options::onFinishAt),
+                                    m_finishAtValue, 7, &m_finishAtLeft, &m_finishAtRight, 108.f);
+
+        if (m_startPosXs.empty()) {
+            m_partialToggle->setEnabled(false);
+            tintToggle(m_partialToggle, kDim);
+            if (m_partialLabel) m_partialLabel->setColor(kDim);
+        }
 
         auto* okSpr = ButtonSprite::create("OK", "goldFont.fnt", "GJ_button_01.png", .8f);
         auto* ok = CCMenuItemSpriteExtra::create(okSpr, this, menu_selector(Options::onOk));
         ok->setID("ok-button"_spr);
-        ui::addChildAtPosition(m_buttonMenu, ok, Anchor::Bottom, ccp(0.f, 26.f));
+        ui::addChildAtPosition(m_buttonMenu, ok, Anchor::Bottom, ccp(0.f, 24.f));
 
         refresh();
         showMenuNote(!Mod::get()->getSettingValue<bool>("play-menu"));
         return true;
+    }
+
+    static void tintBtn(CCMenuItemSpriteExtra* b, cocos2d::ccColor3B c) {
+        if (!b) return;
+        if (auto* spr = geode::cast::typeinfo_cast<cocos2d::CCSprite*>(b->getNormalImage())) spr->setColor(c);
+    }
+
+    static void tintToggle(CCMenuItemToggler* t, cocos2d::ccColor3B c) {
+        if (!t) return;
+        for (auto* b : {t->m_offButton, t->m_onButton})
+            if (b) if (auto* spr = geode::cast::typeinfo_cast<cocos2d::CCSprite*>(b->getNormalImage())) spr->setColor(c);
+    }
+
+    std::vector<int> validFinishList() const {
+        std::vector<int> out;
+        const int n = (int)m_startPosXs.size();
+        for (int i = std::max(0, m_startPosIdx + 1); i < n; ++i) out.push_back(i);
+        out.push_back(-1);   // Level End (100%)
+        return out;
+    }
+
+    void clampRange() {
+        if (m_startPosXs.empty()) {
+            m_partialRange = false;
+            m_startPosIdx = -1;
+            m_finishPosIdx = -1;
+            return;
+        }
+        const int n = (int)m_startPosXs.size();
+        m_startPosIdx = std::clamp(m_startPosIdx, -1, n - 1);
+        if (m_finishPosIdx != -1 && (m_finishPosIdx <= m_startPosIdx || m_finishPosIdx >= n)) {
+            m_finishPosIdx = -1;
+        }
+    }
+
+    std::string formatRangePoint(int idx, bool isStart) const {
+        if (m_startPosXs.empty()) return "No StartPos";
+        if (idx < 0 || idx >= (int)m_startPosXs.size())
+            return isStart ? "Level Start (0%)" : "Level End (100%)";
+        const int pct = (m_maxX > 1.f)
+            ? std::clamp<int>(std::lround(100.0 * m_startPosXs[idx] / m_maxX), 0, 99)
+            : 0;
+        return "SP #" + std::to_string(idx + 1) + " (" + std::to_string(pct) + "%)";
     }
 
     void showMenuNote(bool hold) {
@@ -678,12 +818,67 @@ protected:
         m_searchValue->setString(m_search == UI_SEARCH_DP ? "DP (default)" : uiSearchName(m_search));
         ui::limitNodeWidth(m_searchValue, 150.f, .6f, .3f);
         m_searchValue->setColor(m_search == UI_SEARCH_DP ? kWhite : kWarnRed);
-        if (m_onChange) m_onChange(m_glitch, m_search, m_secSolve);
+
+        const bool rangeEnabled = m_partialRange && !m_startPosXs.empty();
+        const auto cText = rangeEnabled ? kWhite : kDim;
+        if (m_startAtTitle) m_startAtTitle->setColor(cText);
+        if (m_finishAtTitle) m_finishAtTitle->setColor(cText);
+        if (m_startAtValue) {
+            m_startAtValue->setString(formatRangePoint(m_startPosIdx, true).c_str());
+            ui::limitNodeWidth(m_startAtValue, 165.f, .55f, .28f);
+            m_startAtValue->setColor(cText);
+        }
+        if (m_finishAtValue) {
+            m_finishAtValue->setString(formatRangePoint(m_finishPosIdx, false).c_str());
+            ui::limitNodeWidth(m_finishAtValue, 165.f, .55f, .28f);
+            m_finishAtValue->setColor(cText);
+        }
+        for (auto* b : {m_startAtLeft, m_startAtRight, m_finishAtLeft, m_finishAtRight}) {
+            if (!b) continue;
+            b->setEnabled(rangeEnabled);
+            tintBtn(b, cText);
+        }
+
+        if (m_onChange) m_onChange(m_glitch, m_search, m_secSolve, m_partialRange, m_startPosIdx, m_finishPosIdx);
     }
 
     // CCMenuItemToggler calls its target before it flips its own state (see the menu's onCoins).
     void onSecSolve(CCObject*) {
         m_secSolve = !m_secToggle->isToggled();
+        refresh();
+    }
+
+    void onPartialRange(CCObject*) {
+        if (m_startPosXs.empty()) return;
+        m_partialRange = !m_partialToggle->isToggled();
+        if (m_partialRange && m_startPosIdx == -1 && m_finishPosIdx == -1) {
+            m_startPosIdx = 0;
+        }
+        clampRange();
+        refresh();
+    }
+
+    void onStartAt(CCObject* sender) {
+        if (!m_partialRange || m_startPosXs.empty()) return;
+        const int dir = static_cast<cocos2d::CCNode*>(sender)->getTag();
+        const int choices = (int)m_startPosXs.size() + 1;
+        const int curPos = m_startPosIdx + 1;
+        const int nextPos = (curPos + dir + choices) % choices;
+        m_startPosIdx = nextPos - 1;
+        clampRange();
+        refresh();
+    }
+
+    void onFinishAt(CCObject* sender) {
+        if (!m_partialRange || m_startPosXs.empty()) return;
+        const int dir = static_cast<cocos2d::CCNode*>(sender)->getTag();
+        const auto list = validFinishList();
+        int cur = (int)list.size() - 1;
+        for (int i = 0; i < (int)list.size(); ++i) {
+            if (list[i] == m_finishPosIdx) { cur = i; break; }
+        }
+        const int next = (cur + dir + (int)list.size()) % (int)list.size();
+        m_finishPosIdx = list[next];
         refresh();
     }
 
@@ -703,13 +898,16 @@ protected:
         this->onClose(nullptr);
     }
 
-    // The (i) buttons: 0 Section search, 1 Avoid glitches, 2 Search -- every value of the choice, named -- and 3 Hold Play.
+    // The (i) buttons: 0 Section search, 1 Avoid glitches, 2 Search, 3 Hold Play, 4 Replay step, 5..7 Partial range.
     void onInfo(CCObject* sender) {
         switch (static_cast<cocos2d::CCNode*>(sender)->getTag()) {
             case 0: showInfo("Section search", secSolveDetails()); break;
             case 1: showInfo("Avoid glitches", glitchDetails()); break;
             case 3: showInfo("Hold Play to open this menu", holdPlayDetails()); break;
             case 4: showInfo("Fixed replay step", replayStepDetails()); break;
+            case 5: showInfo("Partial range", partialRangeDetails()); break;
+            case 6: showInfo("Start at", startAtDetails()); break;
+            case 7: showInfo("Finish at", finishAtDetails()); break;
             default: showInfo("Search", searchDetails()); break;
         }
     }
@@ -763,6 +961,9 @@ protected:
     int m_glitch = UI_GLITCH_OFF;
     bool m_secSolve = true;
     int m_search = UI_SEARCH_DP;
+    bool m_partialRange = false;
+    int m_startPosIdx = -1;
+    int m_finishPosIdx = -1;
     bool m_replayStep = false;   // the Replay form of Options: fixed replay step (saved "play-replaystep")
     CCMenuItemSpriteExtra* m_optBtn = nullptr;
     cocos2d::CCLabelBMFont* m_note = nullptr;
@@ -1075,6 +1276,14 @@ public:
 
 protected:
 
+    std::string rangeSummary() const {
+        if (!m_partialRange || m_facts.startPosXs.empty() || (m_startPosIdx < 0 && m_finishPosIdx < 0))
+            return {};
+        const std::string s = m_startPosIdx < 0 ? "0%" : ("SP #" + std::to_string(m_startPosIdx + 1));
+        const std::string e = m_finishPosIdx < 0 ? "100%" : ("SP #" + std::to_string(m_finishPosIdx + 1));
+        return s + " -> " + e;
+    }
+
     // Replay needs a file it can play: one that is there and holds at least one input, which is
     // the test the session itself applies (loadInputsFile).
     bool hasSolution() const {
@@ -1092,14 +1301,18 @@ protected:
         m_optBtn->setEnabled(m_mode == UI_MODE_SOLVE || m_mode == UI_MODE_REPLAY);
         m_note->setVisible(bot);
         // The one line for what Options changed.
-        const bool optChanged = m_glitch != UI_GLITCH_OFF || !m_secSolve || m_search != UI_SEARCH_DP;
+        const std::string rng = rangeSummary();
+        const bool warnSearch = m_glitch != UI_GLITCH_OFF || !m_secSolve || m_search != UI_SEARCH_DP;
+        const bool optChanged = warnSearch || !rng.empty();
         {
             std::string t;
             auto add = [&](const std::string& part) { t += (t.empty() ? "" : ", ") + part; };
             if (m_glitch != UI_GLITCH_OFF) add(std::string("Avoid glitches: ") + uiGlitchName(m_glitch));
             if (!m_secSolve) add("no section search");
             if (m_search != UI_SEARCH_DP) add(std::string("Search: ") + uiSearchName(m_search));
-            m_optNote->setString((t + ". The level is more likely not to be solved.").c_str());
+            if (!rng.empty()) add("Range: " + rng);
+            const std::string tail = warnSearch ? ". The level is more likely not to be solved." : ".";
+            m_optNote->setString((t + tail).c_str());
             ui::limitNodeWidth(m_optNote, kW - 60.f, .55f, .3f);
             m_optNote->setColor(m_search != UI_SEARCH_DP ? kWarnRed : kWarnYellow);
         }
@@ -1159,7 +1372,18 @@ protected:
                 m_replayStats->setVisible(canExport);
                 if (canExport) {
                     const auto st = gdsolver::macro::computePlanStats(plan);
-                    m_replayStats->setString(gdsolver::macro::formatPlanStats(st).c_str());
+                    std::string line = gdsolver::macro::formatPlanStats(st);
+                    const SolutionRange sr = readSolutionRange(uiSolutionPath(m_levelId, m_coins));
+                    if (sr.active) {
+                        if (sr.earlyExit) {
+                            char buf[40];
+                            std::snprintf(buf, sizeof(buf), " | Partial (%.0f%%)", sr.stopPct);
+                            line += buf;
+                        } else if (sr.partial) {
+                            line += " | Range";
+                        }
+                    }
+                    m_replayStats->setString(line.c_str());
                     ui::limitNodeWidth(m_replayStats, kW - 30.f, .55f, .3f);
                 }
             }
@@ -1233,12 +1457,15 @@ protected:
         );
 
         if (exported) {
-            const std::string msg = m_facts.random
-                ? ("Exported " + outFilename + " (RNG pinned: may differ outside mod)")
-                : ("Exported " + outFilename);
-            notify::show(msg, m_facts.random ? geode::NotificationIcon::Warning
-                                             : geode::NotificationIcon::Success,
-                         m_facts.random ? 4.5f : 3.f);
+            const SolutionRange sr = readSolutionRange(path);
+            std::string extra;
+            if (sr.earlyExit) extra = " (partial: stops before 100%)";
+            else if (sr.partial) extra = " (partial range)";
+            if (m_facts.random) extra += " (RNG pinned: may differ outside mod)";
+            const bool warn = m_facts.random || sr.earlyExit || sr.partial;
+            notify::show("Exported " + outFilename + extra,
+                         warn ? geode::NotificationIcon::Warning : geode::NotificationIcon::Success,
+                         warn ? 4.5f : 3.f);
         } else {
             notify::show("Export failed: " + outError, geode::NotificationIcon::Error, 4.f);
         }
@@ -1252,6 +1479,9 @@ protected:
         if (!m_secSolve) v.push_back(std::string("No section search: ") + describeSecSolve(false));
         if (m_search != UI_SEARCH_DP)
             v.push_back(std::string("Search, ") + uiSearchName(m_search) + ": " + describeSearch(m_search));
+        const std::string rng = rangeSummary();
+        if (!rng.empty())
+            v.push_back("Partial range (" + rng + "): only solves and replays between the chosen start and finish points.");
         showInfo("Solve options", v);
     }
 
@@ -1264,12 +1494,19 @@ protected:
         }
         if (m_mode != UI_MODE_SOLVE) return;
         Ref<Popup> self = this;
-        auto* o = Options::create(m_glitch, m_search, m_secSolve, [self](int glitch, int search, bool secSolve) {
-            self->m_glitch = glitch;
-            self->m_search = search;
-            self->m_secSolve = secSolve;
-            self->refresh();
-        });
+        auto* o = Options::create(
+            m_glitch, m_search, m_secSolve,
+            m_partialRange, m_startPosIdx, m_finishPosIdx,
+            m_facts.maxX, m_facts.startPosXs,
+            [self](int glitch, int search, bool secSolve, bool partialRange, int startIdx, int finishIdx) {
+                self->m_glitch = glitch;
+                self->m_search = search;
+                self->m_secSolve = secSolve;
+                self->m_partialRange = partialRange;
+                self->m_startPosIdx = startIdx;
+                self->m_finishPosIdx = finishIdx;
+                self->refresh();
+            });
         if (o) o->show();
     }
 
@@ -1284,6 +1521,14 @@ protected:
         g_uiReplayStep = m_mode == UI_MODE_REPLAY && m_replayStep;
         g_uiSearch = m_mode == UI_MODE_SOLVE ? m_search : UI_SEARCH_DP;
         g_uiProfile = (m_mode == UI_MODE_SOLVE) ? m_profile : PROFILE_NORMAL;
+        const bool effectivePartial = (m_mode == UI_MODE_SOLVE) && m_partialRange && !m_facts.startPosXs.empty()
+                                   && (m_startPosIdx >= 0 || m_finishPosIdx >= 0);
+        g_uiPartialRange = effectivePartial;
+        g_uiStartPosIdx = effectivePartial ? m_startPosIdx : -1;
+        g_uiGoalStopIdx = effectivePartial ? m_finishPosIdx : -1;
+        g_uiGoalStopX = (effectivePartial && m_finishPosIdx >= 0 && m_finishPosIdx < (int)m_facts.startPosXs.size())
+                        ? m_facts.startPosXs[m_finishPosIdx]
+                        : -1.f;
         g_uiArmedLevel = m_level.data();
         Mod::get()->setSavedValue<int>("play-mode", m_mode);
         if (m_facts.coins > 0) Mod::get()->setSavedValue<bool>("play-coins", m_coins);
@@ -1753,7 +1998,7 @@ class $modify(PlayMenuPreview, MenuLayer) {
             return;
         }
         if (kind == "options") {
-            if (auto* o = playmenu::Options::create(UI_GLITCH_WAVE, UI_SEARCH_BEAM, false, nullptr)) o->show();
+            if (auto* o = playmenu::Options::create(UI_GLITCH_WAVE, UI_SEARCH_BEAM, false, false, -1, -1, 1000.f, {250.f, 700.f}, nullptr)) o->show();
             return;
         }
         if (kind == "infolong") {   // a text longer than the window, to see the scroll and its bar

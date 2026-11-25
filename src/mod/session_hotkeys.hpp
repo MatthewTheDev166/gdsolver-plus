@@ -33,6 +33,7 @@ inline int g_probeRequest = 0;
 #include "solver/sweep.hpp"
 
 inline void endSession(const std::string& why);
+namespace dpsolve { inline bool savePartialAndQuit(); }
 // Release the manual (F2) pause. Defined further down the chain -- probe:: is not visible from
 // here, and the keys have to be handled in this header
 inline void clearManualPause();
@@ -66,7 +67,7 @@ inline void keySpeed(int dir);
 // has been held (the repeat delay on the step keys, the acceleration on the transport keys), so
 // the held state is mirrored here and the polling structure is left exactly as it was.
 enum class Key {
-    Overlay, Pause, Step1, Step10, Render, Hitboxes, Replay, Quit, Itermap,
+    Overlay, Pause, Step1, Step10, Render, Hitboxes, Replay, Quit, SaveQuit, Itermap,
     Faster, Slower, SeekBack, SeekForward, TakeoverEnd, ReplayPanel, Count
 };
 
@@ -75,7 +76,7 @@ inline bool g_keyDown[(size_t)Key::Count] = {};
 // In the order of the enum.
 inline const char* const kKeySettings[(size_t)Key::Count] = {
     "key-overlay", "key-pause", "key-step1", "key-step10", "key-render", "key-hitboxes",
-    "key-replay", "key-quit", "key-itermap", "key-faster", "key-slower",
+    "key-replay", "key-quit", "key-save-quit", "key-itermap", "key-faster", "key-slower",
     "key-seek-back", "key-seek-forward", "key-takeover-end", "key-replaypanel"
 };
 
@@ -88,6 +89,13 @@ inline bool keyHeld(Key k) {
             auto binds = Mod::get()->getSettingValue<std::vector<Keybind>>(kKeySettings[(size_t)k]);
             if (!binds.empty() && binds.front().key == cocos2d::enumKeyCodes::KEY_RightShift) {
                 return (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+            }
+        }
+        if (k == Key::SaveQuit && hotkeysFocused()) {
+            auto binds = Mod::get()->getSettingValue<std::vector<Keybind>>(kKeySettings[(size_t)k]);
+            if (!binds.empty() && (binds.front().key == cocos2d::enumKeyCodes::KEY_RightControl
+                                   || binds.front().key == cocos2d::enumKeyCodes::KEY_RightContol)) {
+                return (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
             }
         }
 #endif
@@ -120,6 +128,9 @@ inline bool s_f1Down = false, s_f2Down = false, s_f3Down = false, s_f4Down = fal
 inline std::chrono::steady_clock::time_point s_f3Since, s_f3Last, s_f4Since, s_f4Last;
 inline bool s_f5Down = false, s_f6Down = false, s_f7Down = false, s_f9Down = false, s_f10Down = false;
 inline bool s_panelDown = false, s_tkDown = false;
+inline bool s_saveQuitDown = false, s_saveQuitTriggered = false;
+inline std::chrono::steady_clock::time_point s_saveQuitSince;
+inline double g_saveQuitHoldRem = -1.0;
 
 inline void resetTransportHotkeys() {
     s_rightDown = s_leftDown = false;
@@ -130,6 +141,9 @@ inline void resetTransportHotkeys() {
     s_f3Since = s_f3Last = s_f4Since = s_f4Last = {};
     s_f5Down = s_f6Down = s_f7Down = s_f9Down = s_f10Down = false;
     s_panelDown = s_tkDown = false;
+    s_saveQuitDown = s_saveQuitTriggered = false;
+    s_saveQuitSince = {};
+    g_saveQuitHoldRem = -1.0;
     for (size_t i = 0; i < (size_t)Key::Count; ++i) {
         g_keyDown[i] = false;
     }
@@ -477,6 +491,30 @@ inline void pollHotkeys() {
         }
     }
     s_f9Down = f9;
+    // Hold Right Ctrl (1.0s) during a solve: save the deepest GD-verified prefix and quit to level menu.
+    const bool sqHeld = keyHeld(Key::SaveQuit);
+    const bool canSaveQuit = solveSession() && !g_dpShowSolution && !g_sessionOver;
+    if (sqHeld && canSaveQuit) {
+        const auto nowSq = std::chrono::steady_clock::now();
+        if (!s_saveQuitDown) {
+            s_saveQuitDown = true;
+            s_saveQuitSince = nowSq;
+            s_saveQuitTriggered = false;
+        }
+        const double heldSec = std::chrono::duration<double>(nowSq - s_saveQuitSince).count();
+        g_saveQuitHoldRem = std::max(0.0, 1.0 - heldSec);
+        if (!s_saveQuitTriggered && heldSec >= 1.0) {
+            s_saveQuitTriggered = true;
+            g_saveQuitHoldRem = -1.0;
+            log::info("hotkey: hold SaveQuit (1.0s) -> save partial solve & quit");
+            dpsolve::savePartialAndQuit();
+            return;
+        }
+    } else {
+        s_saveQuitDown = false;
+        s_saveQuitTriggered = false;
+        g_saveQuitHoldRem = -1.0;
+    }
     // F7: replay the current plan from the start. resetLevel() puts g_tick and g_nextInput back
     // to 0 and the plan streams from the beginning. Replay is launched with attempts=1, so each
     // press adds one more slot.

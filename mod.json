@@ -68,6 +68,12 @@
 			"name": "Quit to the level screen",
 			"default": "F9"
 		},
+		"key-save-quit": {
+			"type": "keybind",
+			"name": "Save partial solve & quit",
+			"description": "Hold for 1 second during a solve to save the verified progress so far and return to the level menu.",
+			"default": "RightControl"
+		},
 		"key-itermap": {
 			"type": "keybind",
 			"name": "The iteration map",

@@ -1360,6 +1360,34 @@ void profileDedupePromotion() {
     (void)ctrInputs;
     check(ctrOk && ctrOff < 75.0, "profile E2E: Centerline Ship keeps route near corridor center");
 
+    // 3. --goalx: stops cleanly before a downstream lethal wall when custom goalX precedes it.
+    {
+        std::string gcsv = std::string(kObjHeader) + "\n";
+        int guid = 6000;
+        for (double x = 15.0; x <= 815.0; x += 30.0) {
+            gcsv += objRow(1, 0, x, 15.0, 30.0, 30.0, guid++);
+        }
+        // Unpassable spike wall at x=500 across the entire corridor.
+        for (double y = 45.0; y <= 345.0; y += 30.0) {
+            gcsv += objRow(8, 2, 500.0, y, 30.0, 30.0, guid++);
+        }
+        const std::string gLv = writeTmp("dptest_goalx.csv", gcsv);
+        const std::string gOut = (std::filesystem::temp_directory_path() / "dptest_goalx_plan.txt").string();
+        std::remove(gOut.c_str());
+        std::remove((gOut + ".trace.csv").c_str());
+        std::vector<std::string> argvStr = {
+            "leveldp", gLv, "--out", gOut, "--goalx", "300", "--start", "0,30,45,0,0,0,0"
+        };
+        std::vector<char*> argvPtr;
+        for (std::string& s : argvStr) argvPtr.push_back(s.data());
+        const int rc = dp::cliMain((int)argvPtr.size(), argvPtr.data());
+        check(rc == 0 && dp::g_outcome.verdict == dp::VerdictSolved && dp::g_outcome.deepX < 400.0,
+              "goalx E2E: custom goalX=300 clears before downstream wall at x=500");
+        std::remove(gOut.c_str());
+        std::remove((gOut + ".trace.csv").c_str());
+        std::remove(gLv.c_str());
+    }
+
     std::remove(lvPath.c_str());
 }
 

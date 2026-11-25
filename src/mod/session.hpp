@@ -108,6 +108,16 @@ inline bool uiConfigureSession(int levelId) {
         }
         // Training profile configuration:
         g_cfg.solveProfile = g_uiProfile;
+        // Partial / StartPos range (Solve Options):
+        g_cfg.partialRange = g_uiPartialRange;
+        g_cfg.startPosIdx = g_uiPartialRange ? g_uiStartPosIdx : -1;
+        g_cfg.goalStopX = g_uiPartialRange ? g_uiGoalStopX : -1.f;
+        if (g_cfg.partialRange) {
+            // Partial range cannot reliably collect coins outside the solved slice.
+            g_cfg.coinRoute = false;
+            g_cfg.coinMode = false;
+            g_cfg.coinFiles = false;
+        }
         if (g_cfg.solveProfile == PROFILE_MIN_CLICKS) {
             g_cfg.flyPulse = 18;
             g_cfg.wavePulse = 18;
@@ -153,6 +163,16 @@ inline bool uiConfigureSession(int levelId) {
         loadInputsFile(name, plan);   // again: the session base cleared the attempt sequence the first read set
         g_cfg.inputs = std::move(plan);
         g_cfg.maxAttempts = 1;
+        const SolutionRange sr = readSolutionRange(name);
+        if (sr.active) {
+            if (sr.partial) {
+                g_cfg.partialRange = true;
+                g_cfg.startPosIdx = sr.startIdx;
+            }
+            if (sr.endX > 0.f) g_cfg.goalStopX = sr.endX;
+            log::info("panel: replay range partial={} early={} startIdx={} goalStopX={}",
+                      sr.partial, sr.earlyExit, sr.startIdx, sr.endX);
+        }
         // Coins on: GD's own pickups are reported (`coingd:`, and the count at the clear), so the
         // replay says in the log what the eye sees on screen.
         if (g_uiCoins) {

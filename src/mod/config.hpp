@@ -176,6 +176,9 @@ struct Config {
     bool dpSolve = false;
     int solveProfile = 0;   // Training profile: 0 Normal, 1 Min Clicks, 2 Max Clicks, 3 Human, 4 Centerline, 5 Close-Call
     int flyPulse = 0;       // --flypulse for Ship, UFO, Swing
+    bool partialRange = false; // Partial / StartPos range mode (override StartPos / goalStopX)
+    int startPosIdx = -1;      // -1 = Level Start (0%), >= 0 = StartPos #k sorted by x
+    float goalStopX = -1.f;    // > 0 = stop/clear at this world X during Solve, die past it in Replay
     // `dphorizon` is THE LENGTH OF THE PLAN in ticks, not the depth of the search. 0 = derive
     // it from the level, which is the only sane default for a single solve: with a fixed 3000
     // the plan simply stops there and the player dies where it ran out -- measured on lv1,
