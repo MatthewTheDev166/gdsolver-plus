@@ -70,6 +70,7 @@ struct ToggleCmd { int step; std::string mode; };
 // press or release the wave is planned with, in ticks (240 a second), and the clearance it keeps from
 // the floor, the ceiling and solids, in px. PROVISIONAL until measured on the official wave sections.
 constexpr int kWavePulseDefault = 12;
+constexpr double kPortalDodgeDefault = 15.0;
 // The wave's PREFERENCES (dp --wavetidy / --wavetoggle, thread_pool.hpp): a cost per wave tick that grows with the
 // square of how far the wave sits from the middle of its corridor (at most this much, at a wall), and a cost per
 // change of the button. Both only order the routes, they drop none. Measured offline on three official wave
@@ -194,6 +195,12 @@ struct Config {
     // argument to the solver's own command line (repeatable), so anything the CLI takes can be
     // tried without a rebuild.
     bool dpSolve = false;
+    int solveProfile = 0;   // Training profile: 0 Normal, 1 Min Clicks, 2 Max Clicks, 3 Human, 4 Centerline, 5 Close-Call
+    int flyPulse = 0;       // --flypulse for Ship, UFO, Swing
+    double portalDodge = 0.0; // --portaldodge margin (px) for Human / glitch protection
+    bool partialRange = false; // Partial / StartPos range mode (override StartPos / goalStopX)
+    int startPosIdx = -1;      // -1 = Level Start (0%), >= 0 = StartPos #k sorted by x
+    float goalStopX = -1.f;    // > 0 = stop/clear at this world X during Solve, die past it in Replay
     // `dphorizon` is THE LENGTH OF THE PLAN in ticks, not the depth of the search. 0 = derive
     // it from the level, which is the only sane default for a single solve: with a fixed 3000
     // the plan simply stops there and the player dies where it ran out -- measured on lv1,
@@ -1512,6 +1519,37 @@ inline bool recordsHeld() { return g_started || g_botAttempt; }
 // the first version of this had the guard testing only the cfg switch, and a human's clear was
 // still not recorded even though every hook correctly passed it through.
 inline bool progressBlockActive() { return recordsHeld() && g_cfg.progressBlock; }
+
+// Returns a unique integer ID for any level. For online and main levels, this is m_levelID (> 0).
+// For local/editor levels created in the Create tab (m_levelID == 0), a unique ID is derived from
+// the level name and occurrence index so each local level has its own independent solution file.
+inline int levelKeyId(GJGameLevel* level) {
+    if (!level) return 0;
+    const int onlineId = level->m_levelID.value();
+    if (onlineId > 0) return onlineId;
+
+    std::string key = level->m_levelName;
+    if (auto* llm = LocalLevelManager::sharedState()) {
+        if (auto* arr = llm->m_localLevels) {
+            int countBefore = 0;
+            for (auto* obj : geode::cocos::CCArrayExt<GJGameLevel*>(arr)) {
+                if (obj == level) break;
+                if (obj && obj->m_levelName == level->m_levelName) {
+                    ++countBefore;
+                }
+            }
+            if (countBefore > 0) {
+                key += "#" + std::to_string(countBefore);
+            }
+        }
+    }
+    uint32_t h = 2166136261u;
+    for (char c : key) {
+        h ^= static_cast<uint8_t>(c);
+        h *= 16777619u;
+    }
+    return 1900000000 + static_cast<int>(h % 99999999u);
+}
 
 // Whether this build carries the test instruments below (CMake GDSOLVER_TEST_INSTRUMENTS, OFF unless a measurement asks): in any other build their
 // cfg keys are read and ignored, with a line in the log (testInstrument in session.hpp), so a release cannot be told to drop a player's requests.

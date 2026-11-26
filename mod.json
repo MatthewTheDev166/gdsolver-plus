@@ -68,6 +68,12 @@
 			"name": "Quit to the level screen",
 			"default": "F9"
 		},
+		"key-save-quit": {
+			"type": "keybind",
+			"name": "Save partial solve & quit",
+			"description": "Hold for 1 second during a solve to save the verified progress so far and return to the level menu.",
+			"default": "RightControl"
+		},
 		"key-itermap": {
 			"type": "keybind",
 			"name": "The iteration map",
@@ -105,7 +111,15 @@
 			"type": "keybind",
 			"name": "The replay panel",
 			"description": "Shows GD's own record of the deepest verified attempt in the free corner of the screen, on and off.",
-			"default": "Tab"
+			"default": "RightShift"
+		},
+		"export-frame-offset": {
+			"type": "int",
+			"name": "Macro Export Frame Offset",
+			"description": "Shifts every input of an exported .gdr2 by this many frames (0 = exactly the mod's ticks). For trying -1 / +1 if a macro player lands inputs a frame off.",
+			"default": 1,
+			"min": -10,
+			"max": 10
 		}
 	}
 }

@@ -5238,6 +5238,17 @@ class $modify(GJBaseGameLayer) {
                 };
                 std::stable_sort(cur.begin(), cur.end(), [&](int a, int b) { return pc(a) > pc(b); });
             }
+            const bool lowToggleSec = (g_cfg.solveProfile == PROFILE_HUMAN
+                                       || g_cfg.solveProfile == PROFILE_MIN_CLICKS
+                                       || g_cfg.solveProfile == PROFILE_CENTERLINE);
+            const bool maxClickSec = (g_cfg.solveProfile == PROFILE_MAX_CLICKS);
+            if ((lowToggleSec || maxClickSec) && cur.size() > 1) {
+                std::stable_sort(cur.begin(), cur.end(), [&](int a, int b) {
+                    return maxClickSec
+                        ? (g_nodes[(size_t)a].toggles > g_nodes[(size_t)b].toggles)
+                        : (g_nodes[(size_t)a].toggles < g_nodes[(size_t)b].toggles);
+                });
+            }
             for (int ni : cur) {
                 if (foundLeaf >= 0) break;
                 // Hand the frame back BETWEEN EXPANSIONS as well, not only between layers. A
@@ -5257,7 +5268,21 @@ class $modify(GJBaseGameLayer) {
                 } else if ((size_t)ni >= snaps.size() || snaps[(size_t)ni].empty()) {
                     continue;
                 }
-                for (int branch = 0; branch < 2; ++branch) {
+                const int parentIn = (int)g_nodes[(size_t)ni].in;
+                for (int bOrd = 0; bOrd < 2; ++bOrd) {
+                    const int branch = lowToggleSec ? (bOrd == 0 ? parentIn : 1 - parentIn)
+                                     : maxClickSec  ? (bOrd == 0 ? 1 - parentIn : parentIn)
+                                                    : bOrd;
+                    const uint8_t childEdgeAge = (branch == parentIn)
+                        ? (uint8_t)std::min(255, (int)g_nodes[(size_t)ni].edgeAge + 1)
+                        : (uint8_t)1;
+                    uint16_t childToggles = g_nodes[(size_t)ni].toggles;
+                    if (branch != parentIn) {
+                        int add = 1;
+                        if (g_cfg.solveProfile == PROFILE_HUMAN && g_nodes[(size_t)ni].edgeAge < 12)
+                            add += (12 - (int)g_nodes[(size_t)ni].edgeAge);
+                        childToggles = (uint16_t)std::min(65535, (int)childToggles + add);
+                    }
                     g_died = false;          // pick up this step's death verdict
                     if (g_snapOn) {
                         const auto snapT0 = std::chrono::steady_clock::now();   // print only
@@ -5533,6 +5558,15 @@ class $modify(GJBaseGameLayer) {
                     layMinX = std::min(layMinX, px);
                     layMinY = std::min(layMinY, py);
                     layMaxY = std::max(layMaxY, py);
+                    if (g_cfg.solveProfile == PROFILE_HUMAN && branch != parentIn && p && (int)modeIdx(p) == 4) {
+                        const int pAge = (int)g_nodes[(size_t)ni].edgeAge;
+                        const bool miniW = (p->m_vehicleSize < 0.9f);
+                        int wAdd = 0;
+                        if (pAge < 4)       wAdd = miniW ? 120 : 80;
+                        else if (pAge < 8)  wAdd = miniW ? 65 : 45;
+                        else if (pAge < 14) wAdd = miniW ? 26 : 18;
+                        childToggles = (uint16_t)std::min(65535, (int)childToggles + wAdd);
+                    }
                     if (reachedGoal(px, py, depth)) {
                         // After the cutoff, discard without evaluating (see the note on
                         // g_maxDoomed). The search continues but the cost does not grow.
@@ -5550,7 +5584,8 @@ class $modify(GJBaseGameLayer) {
                                            (float)py, (float)pv, (float)px,
                                            (uint16_t)secsolve::cntNow(this),
                                            (uint8_t)(p->m_vehicleSize < 0.9f ? 1 : 0),
-                                           (uint8_t)(secDualP2() ? 1 : 0), secDualY2()});
+                                           (uint8_t)(secDualP2() ? 1 : 0), secDualY2(),
+                                           childToggles, childEdgeAge});
                         g_dash.emplace_back();
                         secCaptureDash(g_dash.back());
                         g_vy.push_back(p ? p->m_yVelocity : 0.0);
@@ -5650,7 +5685,8 @@ class $modify(GJBaseGameLayer) {
                                            (float)py, (float)pv, (float)px,
                                            (uint16_t)cntHere,
                                            (uint8_t)(p->m_vehicleSize < 0.9f ? 1 : 0),
-                                           (uint8_t)(secDualP2() ? 1 : 0), secDualY2()});
+                                           (uint8_t)(secDualP2() ? 1 : 0), secDualY2(),
+                                           childToggles, childEdgeAge});
                         g_dash.emplace_back();
                         secCaptureDash(g_dash.back());
                         g_vy.push_back(p ? p->m_yVelocity : 0.0);
@@ -5690,7 +5726,8 @@ class $modify(GJBaseGameLayer) {
                                            (float)py, (float)pv, (float)px,
                                            (uint16_t)cntHere,
                                            (uint8_t)(p->m_vehicleSize < 0.9f ? 1 : 0),
-                                           (uint8_t)(secDualP2() ? 1 : 0), secDualY2()});
+                                           (uint8_t)(secDualP2() ? 1 : 0), secDualY2(),
+                                           childToggles, childEdgeAge});
                         g_dash.emplace_back();
                         secCaptureDash(g_dash.back());
                         g_vy.push_back(p ? p->m_yVelocity : 0.0);
@@ -5812,10 +5849,24 @@ class $modify(GJBaseGameLayer) {
                 out.reserve(q);
                 out.push_back(v.front()); in.insert(v.front());
                 out.push_back(v.back()); in.insert(v.back());
-                for (int ni : v) {
-                    if (out.size() >= q) break;
-                    if (!cells.insert(cellOf(ni, lo)).second) continue;
-                    if (in.insert(ni).second) out.push_back(ni);
+                if (lowToggleSec || maxClickSec) {
+                    std::vector<int> byTog(v);
+                    std::stable_sort(byTog.begin(), byTog.end(), [&](int a, int b) {
+                        return maxClickSec
+                            ? (g_nodes[(size_t)a].toggles > g_nodes[(size_t)b].toggles)
+                            : (g_nodes[(size_t)a].toggles < g_nodes[(size_t)b].toggles);
+                    });
+                    for (int ni : byTog) {
+                        if (out.size() >= q) break;
+                        if (!cells.insert(cellOf(ni, lo)).second) continue;
+                        if (in.insert(ni).second) out.push_back(ni);
+                    }
+                } else {
+                    for (int ni : v) {
+                        if (out.size() >= q) break;
+                        if (!cells.insert(cellOf(ni, lo)).second) continue;
+                        if (in.insert(ni).second) out.push_back(ni);
+                    }
                 }
                 if (out.size() < q) {
                     std::vector<int> rest;
@@ -6855,7 +6906,8 @@ class $modify(GJBaseGameLayer) {
                 // edge into a jump of player 1 -- so there it is not pressed, and said once.
                 // The text of that line is also how the harness tells a package that has this input path from one that
                 // does not (py/gdtas/gdbase.py PLAYER2_INPUT_MARK): reword it there too, or the guard lets plans through.
-                const bool twoPlayerLevel = m_levelSettings && m_levelSettings->m_twoPlayerMode;
+                const bool twoPlayerLevel = (m_levelSettings && m_levelSettings->m_twoPlayerMode)
+                                         || (m_level && m_level->m_twoPlayerMode);
                 if (in.p2 && !twoPlayerLevel) {
                     static bool said = false;
                     if (!said) {
@@ -7444,6 +7496,22 @@ class $modify(GJBaseGameLayer) {
                 (uint8_t)((dual && m_player2 && m_player2->m_isOnGround) ? 1 : 0)
             };
         }
+        // Plain replay live trajectory recording: if itermap has no paths on disk, record live points
+        // so the player's trajectory (P1 and P2) is drawn dynamically and can be saved.
+        if (g_started && !g_sessionOver && !g_cfg.dpSolve && m_player1 && (g_tick % itermap::kPathStep == 0)) {
+            static bool s_liveRecording = false;
+            if (g_tick == 0) {
+                std::lock_guard<std::mutex> lk(itermap::g_mu);
+                s_liveRecording = itermap::g_paths.empty();
+            }
+            if (s_liveRecording) {
+                const bool p2InPlay = m_gameState.m_isDualMode && m_player2 && m_player2 != m_player1;
+                itermap::recordLiveStep(m_player1->getPositionX(), m_player1->getPositionY(),
+                                        p2InPlay ? m_player2->getPositionX() : 0.f,
+                                        p2InPlay ? m_player2->getPositionY() : 0.f,
+                                        p2InPlay);
+            }
+        }
         // 10-second heartbeat for plain replay. A plain replay writes nothing to
         // result.txt until it finishes, so this keeps the outer freeze detector
         // (no-update guard) from wrongly killing a healthy verification run
@@ -7614,6 +7682,23 @@ class $modify(GJBaseGameLayer) {
                     + " mode=" + modeStr(m_player1));
             }
             s_prev = st;
+        }
+        // Partial range end cutoff: Finish at a selected StartPos (g_cfg.goalStopX > 0).
+        // During Solve verification, passing goalStopX completes the run cleanly; during
+        // Replay (or the Solve showing pass), passing it kills the player right at the spot.
+        if (g_started && !g_sessionOver && !secsolve::g_active && !secsolve::inFlight()
+            && g_cfg.partialRange && g_cfg.goalStopX > 0.f && m_player1 && !m_player1->m_isDead
+            && g_tick > 2 && m_player1->getPositionX() >= g_cfg.goalStopX) {
+            if (auto* pl = PlayLayer::get(); pl && !pl->m_hasCompletedLevel) {
+                if (g_cfg.dpSolve && !g_dpShowSolution) {
+                    if (!pl->m_levelEndAnimationStarted) {
+                        pl->m_levelEndAnimationStarted = true;
+                        pl->levelComplete();
+                    }
+                } else {
+                    pl->destroyPlayer(m_player1, m_player1);
+                }
+            }
         }
         // Our own coin pickup test: a coordinate hit within a conservative radius counts
         // as picked up and the pickup tick is recorded (independent of GD's in-checkpoint
@@ -8390,6 +8475,15 @@ class $modify(GJBaseGameLayer) {
     }
 
     void handleButton(bool down, int button, bool isPlayer1) {
+        // GD's GJBaseGameLayer::handleButton XORs `isPlayer1` internally when "Flip 2-Player
+        // Controls" (game variable "0010") is enabled outside editor/replay playback. Bot
+        // injections pass the physical target player (`!in.p2`), so pre-flip before calling GD;
+        // non-injected calls arrive pre-flip, so recover physical player1 for logging/takeover.
+        const bool flip2P = !this->m_isEditor && !this->m_useReplay
+            && GameManager::sharedState()
+            && GameManager::sharedState()->getGameVariable("0010");
+        const bool physPlayer1 = (g_injecting || !flip2P) ? isPlayer1 : !isPlayer1;
+        const bool callPlayer1 = (g_injecting && flip2P) ? !isPlayer1 : isPlayer1;
         // Replay mode: block real input other than injections (still recorded).
         // !g_sessionOver is required: without it the block persists after the session
         // ends and manual play stops working
@@ -8399,26 +8493,26 @@ class $modify(GJBaseGameLayer) {
         if (((g_cfg.blockInput && g_started && !g_sessionOver) || (workerInputGate() && down)) && !g_injecting
             && !takeover::personDriving()) {
             if (down && workerInputGate()) noteWorkerInputDrop("a button press");   // (a release is dropped as before but not counted: the game's own come through here at every attempt's start)
-            ev("handleButton_BLOCKED", down, button, isPlayer1);
+            ev("handleButton_BLOCKED", down, button, physPlayer1);
             return;
         }
-        ev("handleButton", down, button, isPlayer1);
+        ev("handleButton", down, button, physPlayer1);
         // The person's presses, at the tick GD applies them: g_tick is the substep about to run
         // (or, between frames, the next one), which is the step an injection of the same press
         // is fed at.
-        if (!g_injecting && takeover::personDriving()) takeover::noteInput(down, button, isPlayer1);
+        if (!g_injecting && takeover::personDriving()) takeover::noteInput(down, button, physPlayer1);
         // Remember the raw press for the slope trace. Jump only (button 1) and
         // player 1 only: the second body follows the same input in these levels,
         // and a per-half press would need the dual input split, which no probe
         // here varies.
-        if (button == 1 && isPlayer1) g_btnDown = down;
+        if (button == 1 && physPlayer1) g_btnDown = down;
         // cfg batchlog (print only): the tick each press and release reaches GD at
         if (itermap::g_batchFrom >= 0 && g_tick >= itermap::g_batchFrom && g_tick <= itermap::g_batchTo
             && g_started && !g_sessionOver)
             writeResult("batch: button t=" + std::to_string((long long)g_tick) + " down=" + std::to_string(down ? 1 : 0)
-                        + " btn=" + std::to_string(button) + " p1=" + std::to_string(isPlayer1 ? 1 : 0)
+                        + " btn=" + std::to_string(button) + " p1=" + std::to_string(physPlayer1 ? 1 : 0)
                         + " run=" + (seekcp::g_from < 0 ? std::string("head") : "cp@" + std::to_string(seekcp::g_from)));
-        GJBaseGameLayer::handleButton(down, button, isPlayer1);
+        GJBaseGameLayer::handleButton(down, button, callPlayer1);
     }
 
     int checkCollisions(PlayerObject* player, float dt, bool ignoreDamage) {

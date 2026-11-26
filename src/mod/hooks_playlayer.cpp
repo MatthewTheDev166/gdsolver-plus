@@ -198,10 +198,10 @@ class $modify(PlayLayer) {
         const bool armed = level && g_uiArmedLevel == level;
         if (g_uiArmedLevel && !armed)
             log::info("play menu: armed for another level, entering {} unarmed",
-                      level ? level->m_levelID.value() : -1);
+                      level ? levelKeyId(level) : -1);
         g_uiArmedLevel = nullptr;   // one entry per Start, whatever is decided below
         bool want = (!g_started || g_sessionOver) && g_uiMode > 0 && armed;
-        if (want && uiConfigureSession(level->m_levelID.value())) {
+        if (want && uiConfigureSession(levelKeyId(level))) {
             reverseSyncForLevel(level);   // after the session reset: the menu's route sets what the cfg route's level entry sets
             attemptAutoForLevel(level);
         }
@@ -304,6 +304,41 @@ class $modify(PlayLayer) {
         writeResult("slice: the copy has " + std::to_string(coins) + " of the level's "
                     + std::to_string(levelslice::g_origCoins) + " coin(s)"
                     + (held ? "" : " (it was not built under the level's type)"));
+    }
+
+    static StartPosObject* resolvePartialStartPos(PlayLayer* pl) {
+        if (!pl || !pl->m_objects || !g_cfg.partialRange || g_cfg.startPosIdx < 0) return nullptr;
+        std::vector<StartPosObject*> list;
+        for (auto* o : CCArrayExt<GameObject*>(pl->m_objects)) {
+            if (auto* sp = geode::cast::typeinfo_cast<StartPosObject*>(o)) list.push_back(sp);
+        }
+        std::sort(list.begin(), list.end(), [](StartPosObject* a, StartPosObject* b) {
+            return a->getPositionX() < b->getPositionX();
+        });
+        if (g_cfg.startPosIdx < (int)list.size()) return list[g_cfg.startPosIdx];
+        return nullptr;
+    }
+
+    static bool applyPartialStartPos(PlayLayer* pl) {
+        if (!pl || !g_started) return false;
+        StartPosObject* tgt = g_cfg.partialRange ? resolvePartialStartPos(pl) : nullptr;
+        if (tgt && tgt->m_startSettings) {
+            tgt->m_startSettings->m_disableStartPos = false;
+        }
+        if (pl->m_startPosObject != tgt) {
+            pl->setActiveStartPosObject(tgt);
+            if (tgt) pl->loadStartPosObject(tgt);
+            return true;
+        }
+        return false;
+    }
+
+    void setupHasCompleted() {
+        PlayLayer::setupHasCompleted();
+        if (this != PlayLayer::get() || !g_started) return;
+        if (applyPartialStartPos(this)) {
+            PlayLayer::resetLevel();
+        }
     }
 
     // The layer leaves its scene (the slice swap, the next level of a suite, the way out of a level): the sprites that follow its objects stop their
@@ -631,6 +666,9 @@ class $modify(PlayLayer) {
             if (g_cfg.windowGuard && g_started && !g_sessionOver && !ckptRestore && !cpflight::g_starting
                 && !takeover::g_restoring)
                 windowguard::enforce("attempt", false, [](const std::string& s) { writeResult(s); });
+            if (g_started && !g_sessionOver && !ckptRestore && !cpflight::g_starting
+                && !takeover::g_restoring)
+                applyPartialStartPos(this);
             { RngResetScope rngScope(this); PlayLayer::resetLevel(); }
             g_resetMarkLayer = this;
             g_resetMarkPc = g_pcCalls;
@@ -677,6 +715,13 @@ class $modify(PlayLayer) {
                     writeResult(b);
                 }
                 std::memset(gs + gdoff::kStateMaxPortalY, 0, 4);
+                static int s_xd = 0;
+                if (s_xd++ < 3) {
+                    char b[160];
+                    snprintf(b, sizeof(b), "headextradelta: m_extraDelta was %.17g, now 0", (double)m_extraDelta);
+                    writeResult(b);
+                }
+                m_extraDelta = 0;
             }
             // cfg resetdump (print only): player 1's whole object as a head reset leaves it, then the layer's
             // GJBaseGameLayer part and the objects resetdumpuids names -- what the next attempt inherits, before
@@ -794,8 +839,11 @@ class $modify(PlayLayer) {
             // Guard against a leftover hold: if the previous attempt ends while pressed, the
             // button carries over into tick 0 of the next attempt and it jumps continuously
             // from the very start (breaking reproduction of the same plan)
+            const bool twoPlayerLevel = (this->m_levelSettings && this->m_levelSettings->m_twoPlayerMode)
+                                     || (this->m_level && this->m_level->m_twoPlayerMode);
             g_injecting = true;
             this->handleButton(false, 1, true);
+            if (twoPlayerLevel) this->handleButton(false, 1, false);
             g_injecting = false;
         }
         // An attempt sequence's prelude attempts do not count against the cap: it is the clearing attempts' budget.
@@ -1515,7 +1563,8 @@ class $modify(PlayLayer) {
                 && levelslice::g_phase != levelslice::Sliced
                 && levelslice::g_phase != levelslice::RefFlight
                 && (goal - cx) > g_clearMargin
-                && this->getCurrentPercent() < 95.0f && !endTrigLevel) {
+                && this->getCurrentPercent() < 95.0f && !endTrigLevel
+                && !(g_cfg.partialRange && g_cfg.goalStopX > 0.f && cx >= g_cfg.goalStopX - 2.f)) {
                 char fb[256];
                 snprintf(fb, sizeof(fb),
                     "dpsolve: refusing a clear %.0fpx short of the goal (x=%.0f goal=%.0f "
@@ -1584,6 +1633,15 @@ class $modify(PlayLayer) {
                 if (writeInputsFile(name, g_cfg.inputs)) {
                     // ...and which version solved it, for the play menu (solvedWithPath).
                     writeSolvedWith(name, Mod::get()->getVersion().toVString());
+                    SolutionRange sr;
+                    sr.partial = g_cfg.partialRange;
+                    sr.earlyExit = false;
+                    sr.startIdx = g_cfg.startPosIdx;
+                    sr.endIdx = g_uiGoalStopIdx;
+                    sr.startX = 0.f;
+                    sr.endX = g_cfg.goalStopX;
+                    sr.stopPct = this->getCurrentPercent();
+                    writeSolutionRange(name, sr);
                     writeResult(std::string("dpsolve: solution saved -> ") + name);
                     notify::show("gdsolver: solution saved", NotificationIcon::Success, 3.f);
                 }

@@ -290,7 +290,8 @@ inline void restored(const Cp& c, float x, float y, float vy) {
 inline void noteInput(bool down, int button, bool isPlayer1) {
     bool twoPlayer = false;
     if (auto* pl = PlayLayer::get())
-        if (pl->m_levelSettings) twoPlayer = pl->m_levelSettings->m_twoPlayerMode;
+        twoPlayer = (pl->m_levelSettings && pl->m_levelSettings->m_twoPlayerMode)
+                 || (pl->m_level && pl->m_level->m_twoPlayerMode);
     if (button == 1 && (isPlayer1 || !twoPlayer)) {
         g_human.push_back({(int)g_tick, down});
         return;

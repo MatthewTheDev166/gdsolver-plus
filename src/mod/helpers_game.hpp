@@ -73,6 +73,9 @@ inline bool  g_silenced = false;     // the "solving / music=mute" stop has been
 inline bool  g_musicPaused = false;  // WE paused it (never fight a pause GD itself made)
 inline bool  g_pausedForSpeed = false; // ...and it was the speed, not a game pause, that did it
 inline float g_pitch = 1.f;          // the pitch currently applied to the music group
+inline float g_prevSyncSpeed = 1.f;  // last spectating speed seen by sync()
+inline bool  g_resyncAfterSpeed = false; // settle check after leaving high speed or speed-pause
+inline std::chrono::steady_clock::time_point g_lastDriftSeek{};
 // Whether the group has had to be told again since the last real transition. GD taking the song
 // back is worth one line; re-asserting it every frame afterwards is worth none.
 inline bool  g_reasserted = false;
@@ -323,6 +326,9 @@ inline void neutral() {
         if (g_musicPaused) grp->setPaused(false);
     }
     g_pitch = 1.f;
+    g_prevSyncSpeed = 1.f;
+    g_resyncAfterSpeed = false;
+    g_lastDriftSeek = {};
     g_musicPaused = false;
     g_pausedForSpeed = false;
     g_silenced = false;
@@ -387,15 +393,19 @@ inline void sync() {
         muteForSeek();              // re-fetches the group, so a replaced one is caught
         grp->setPaused(true);
         g_seekChannels = true;      // the resume after it unpauses the channels too (see above)
+        g_resyncAfterSpeed = false;
         if (!g_musicPaused) {
             g_musicPaused = true;
             g_pausedForSpeed = !gameStopped;   // the arrival must re-seek it
             log::info("audio: music held for the seek");
         }
+        g_prevSyncSpeed = g_watchSpeed;
         return;
     }
     const bool tooFast = g_watchSpeed > kPitchMax;
     const bool wantPaused = gameStopped || tooFast;
+    const float prevSpeed = g_prevSyncSpeed;
+    g_prevSyncSpeed = g_watchSpeed;
     if (wantPaused != g_musicPaused) {
         g_musicPaused = wantPaused;
         g_reasserted = false;
@@ -414,13 +424,23 @@ inline void sync() {
             // was parked -- position zero, after a rewind restarted the level -- for however
             // long FMOD takes to act on the seek.
             g_pausedForSpeed = false;
+            if (!pitchIs(grp, g_watchSpeed)) {
+                g_pitch = g_watchSpeed;
+                grp->setPitch(g_watchSpeed);
+            }
             fe->setMusicTimeMS(songPosMs(), false, 0);
             grp->setPaused(false);
-            if (g_seekChannels) unpauseChannels(grp);
+            unpauseChannels(grp);
             g_seekChannels = false;
+            g_resyncAfterSpeed = true;
+            g_lastDriftSeek = std::chrono::steady_clock::now();
             log::info("audio: music resumed, seeked to {}ms (tick {}, song offset {}ms)",
                       songPosMs(), (long long)g_tick, songOffsetMs());
         } else {
+            if (!pitchIs(grp, g_watchSpeed)) {
+                g_pitch = g_watchSpeed;
+                grp->setPitch(g_watchSpeed);
+            }
             grp->setPaused(false);
             // (a seek that landed with the game stopped -- a frame-step back -- resumes here)
             if (g_seekChannels) unpauseChannels(grp);
@@ -449,6 +469,43 @@ inline void sync() {
         }
         g_pitch = g_watchSpeed;
         grp->setPitch(g_watchSpeed);
+    }
+    // Keep FMOD's song needle aligned across speed-notch changes (e.g. 4x -> 2x -> 1x) and while
+    // playing above/below 1x, since multi-update replay loops run independently of FMOD's clock.
+    if (!wantPaused && !g_musicHeld && g_tick > 0 && playingChannels(grp) > 0) {
+        auto* pl = PlayLayer::get();
+        const bool activePlay = !pl || ((!pl->m_player1 || !pl->m_player1->m_isDead)
+                                        && !pl->m_levelEndAnimationStarted);
+        if (activePlay) {
+            const unsigned wantMs = songPosMs();
+            const unsigned curMs = fe->getMusicTimeMS(0);
+            const long long driftMs = std::llabs((long long)curMs - (long long)wantMs);
+            const bool notchReturnedOrDropped =
+                (g_watchSpeed < prevSpeed) || (g_watchSpeed == 1.f && prevSpeed != 1.f);
+            if (notchReturnedOrDropped) {
+                g_resyncAfterSpeed = true;
+                if (driftMs > 20) {
+                    fe->setMusicTimeMS(wantMs, false, 0);
+                    g_lastDriftSeek = std::chrono::steady_clock::now();
+                    log::info("audio: speed step ({:g}x -> {:g}x) resynced song {}ms -> {}ms",
+                              (double)prevSpeed, (double)g_watchSpeed, curMs, wantMs);
+                }
+            } else if ((g_resyncAfterSpeed || g_watchSpeed != 1.f) && g_tick > 24) {
+                const auto now = std::chrono::steady_clock::now();
+                const long long threshMs = (g_watchSpeed == 1.f) ? 50 : 100;
+                if (driftMs > threshMs) {
+                    if (g_lastDriftSeek.time_since_epoch().count() == 0
+                        || std::chrono::duration<double, std::milli>(now - g_lastDriftSeek).count() >= 450.0) {
+                        fe->setMusicTimeMS(wantMs, false, 0);
+                        g_lastDriftSeek = now;
+                        log::info("audio: drift resync at {:g}x ({}ms -> {}ms, tick {})",
+                                  (double)g_watchSpeed, curMs, wantMs, (long long)g_tick);
+                    }
+                } else if (g_watchSpeed == 1.f && g_resyncAfterSpeed) {
+                    g_resyncAfterSpeed = false;
+                }
+            }
+        }
     }
     // The song the seek held back (see holdMusic). Started here, at the end, once the game has
     // stopped moving -- and seeked straight to where it stopped, so it comes in on the beat

@@ -167,6 +167,8 @@ inline void resetSessionState() {
     // draw the PREVIOUS level's rounds over this one -- the same family of bug as the grouptrace
     // and HUD leaks above, and just as convincing to look at.
     itermap::clear();
+    itermap::endSeek("reset_session");
+    resetTransportHotkeys();
     levelslice::reset();
     // ...and the human takeover: its checkpoint belongs to this level's layer, and a mode left
     // live would lift the next session's input block.
@@ -313,6 +315,46 @@ inline bool writeAttemptSequence(const std::string& path, const std::vector<Prel
 // (<solution>.ver), so the solution itself keeps the format every reader of it expects. A
 // solution filed before the versions were written has none, and reads as "".
 inline std::string solvedWithPath(const std::string& solutionPath) { return solutionPath + ".ver"; }
+
+// Sidecar (<solution>.range) storing whether a saved solution was solved as a partial/StartPos
+// run or saved early via Hold Right Ctrl, so Replay automatically spawns at the right StartPos
+// and stops/dies at the cutoff X.
+struct SolutionRange {
+    bool active = false;
+    bool partial = false;
+    bool earlyExit = false;
+    int startIdx = -1;
+    int endIdx = -1;
+    float startX = 0.f;
+    float endX = -1.f;
+    float stopPct = 0.f;
+};
+inline std::string solutionRangePath(const std::string& solutionPath) { return solutionPath + ".range"; }
+inline void writeSolutionRange(const std::string& solutionPath, const SolutionRange& r) {
+    if (!r.active && !r.partial && !r.earlyExit) {
+        std::error_code ec;
+        std::filesystem::remove(solutionRangePath(solutionPath), ec);
+        return;
+    }
+    std::ofstream f(solutionRangePath(solutionPath), std::ios::trunc);
+    if (!f) return;
+    f << (r.partial ? 1 : 0) << "," << (r.earlyExit ? 1 : 0) << ","
+      << r.startIdx << "," << r.endIdx << "," << r.startX << "," << r.endX << "," << r.stopPct << "\n";
+}
+inline SolutionRange readSolutionRange(const std::string& solutionPath) {
+    SolutionRange r;
+    std::ifstream f(solutionRangePath(solutionPath));
+    std::string ln;
+    if (!f || !std::getline(f, ln)) return r;
+    int part = 0, early = 0;
+    if (sscanf(ln.c_str(), "%d,%d,%d,%d,%f,%f,%f",
+               &part, &early, &r.startIdx, &r.endIdx, &r.startX, &r.endX, &r.stopPct) >= 6) {
+        r.partial = (part != 0);
+        r.earlyExit = (early != 0);
+        r.active = r.partial || r.earlyExit;
+    }
+    return r;
+}
 inline void writeSolvedWith(const std::string& solutionPath, const std::string& version) {
     std::ofstream f(solvedWithPath(solutionPath), std::ios::trunc);
     if (f) f << version << "\n";

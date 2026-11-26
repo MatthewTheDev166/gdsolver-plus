@@ -45,6 +45,10 @@ inline std::string uiSolutionPath(int levelId, bool coins) {
            + (coins ? "_coins.txt" : "_dp.txt");
 }
 
+inline std::string uiSolutionPath(GJGameLevel* level, bool coins) {
+    return uiSolutionPath(levelKeyId(level), coins);
+}
+
 inline bool uiConfigureSession(int levelId) {
     if (g_uiMode == UI_MODE_SOLVE) {
         // Solve mode: no plan yet -- the mod is about to make one. The level is held still
@@ -111,11 +115,42 @@ inline bool uiConfigureSession(int levelId) {
             g_cfg.waveTidy = kWaveTidyDefault;
             g_cfg.waveToggle = kWaveToggleDefault;
         }
+        // Training profile configuration:
+        g_cfg.solveProfile = g_uiProfile;
+        // Partial / StartPos range (Solve Options):
+        g_cfg.partialRange = g_uiPartialRange;
+        g_cfg.startPosIdx = g_uiPartialRange ? g_uiStartPosIdx : -1;
+        g_cfg.goalStopX = g_uiPartialRange ? g_uiGoalStopX : -1.f;
+        if (g_cfg.partialRange) {
+            // Partial range cannot reliably collect coins outside the solved slice.
+            g_cfg.coinRoute = false;
+            g_cfg.coinMode = false;
+            g_cfg.coinFiles = false;
+        }
+        if (g_cfg.solveProfile == PROFILE_MIN_CLICKS) {
+            g_cfg.flyPulse = 18;
+            g_cfg.wavePulse = 18;
+            g_cfg.waveToggle = std::max(g_cfg.waveToggle, 20);
+        } else if (g_cfg.solveProfile == PROFILE_HUMAN) {
+            // Human: soft toggle cost & proximity cushion in search_dp.hpp; automatic portal-squeeze
+            // protection (--portaldodge, without glitchDeco) and never clobber Glitches + wave.
+            g_cfg.flyPulse = 0;
+            g_cfg.portalDodge = std::max(g_cfg.portalDodge, kPortalDodgeDefault);
+            if (g_uiGlitchMode < UI_GLITCH_WAVE) {
+                g_cfg.wavePulse = 0;
+                g_cfg.waveTidy = 0.0;
+            }
+        } else if (g_cfg.solveProfile == PROFILE_CENTERLINE) {
+            g_cfg.flyPulse = 12;
+            g_cfg.wavePulse = std::max(g_cfg.wavePulse, 12);
+            g_cfg.waveTidy = std::max(g_cfg.waveTidy, kWaveTidyDefault);
+        }
         // Section search: on unless Options turned it off (cfg dpsecauto=0, the same switch).
         if (!g_uiSecSolve) g_cfg.dpSecAuto = false;
         // The search (Config::dpSearch): the layer DP unless Options chose an experimental one.
         g_cfg.dpSearch = uiSearchCfg(g_uiSearch);
-        log::info("panel: solve lv{} in-process{}{}{}{}, search {}", levelId,
+        log::info("panel: solve lv{} in-process, profile {}{}{}{}{}, search {}", levelId,
+                  uiProfileName(g_cfg.solveProfile),
                   g_uiCoins ? " with coins" : "", g_uiGlitch ? " avoiding glitches" : "",
                   g_uiGlitchMode >= UI_GLITCH_WAVE ? " (wave behaviour)" : "",
                   g_uiSecSolve ? "" : ", no section search", g_cfg.dpSearch);
@@ -139,6 +174,16 @@ inline bool uiConfigureSession(int levelId) {
         loadInputsFile(name, plan);   // again: the session base cleared the attempt sequence the first read set
         g_cfg.inputs = std::move(plan);
         g_cfg.maxAttempts = 1;
+        const SolutionRange sr = readSolutionRange(name);
+        if (sr.active) {
+            if (sr.partial) {
+                g_cfg.partialRange = true;
+                g_cfg.startPosIdx = sr.startIdx;
+            }
+            if (sr.endX > 0.f) g_cfg.goalStopX = sr.endX;
+            log::info("panel: replay range partial={} early={} startIdx={} goalStopX={}",
+                      sr.partial, sr.earlyExit, sr.startIdx, sr.endX);
+        }
         // Coins on: GD's own pickups are reported (`coingd:`, and the count at the clear), so the
         // replay says in the log what the eye sees on screen.
         if (g_uiCoins) {

@@ -541,6 +541,9 @@ inline void resetInvocationState() {
     g_memLimitMiB = 6144;
     g_waveTidy = 0.0;
     g_waveToggle = 0;
+    g_solveProfile = 0;
+    g_customGoalX = -1.0;
+    g_portalDodgeMargin = 0.0;
     g_startEdge = -1;
     g_glitchDeco = false;
     g_coinWinY = 0.0;
@@ -595,6 +598,7 @@ inline void resetInvocationState() {
     g_twinAudit = false;
     g_minPulse = 0;
     g_wavePulse = 0;
+    g_flyPulse = 0;
     g_inputGrid = 0;
     g_gridGroundPress = false;
     g_gridGroundPressCube = false;

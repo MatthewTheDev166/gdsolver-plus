@@ -227,7 +227,7 @@ constexpr size_t kCoveredBytes = 0
     DP_STATE_FIELDS(X)
 #undef X
     ;
-constexpr size_t kStatePadBytes = 37;   // (+4: tapWin's tail, 20 bytes of evKey / tapN / tapWin in a State that grew by 24) bytes the table does not cover: 21 of alignment padding (12 still empty; revFired took 2; --camy's camTwStart 4, camPortal 1, camY 4 sit in the rest, with no row of their own) + 8 for --camy's camDy / camTan at the end (bandOffY, --camyband branch B, took 4 of the 8 bytes the State grew by and has a row: the 4 left are alignment)
+constexpr size_t kStatePadBytes = 43;   // (+6 from uint32_t tight align; +4: tapWin's tail, 20 bytes of evKey / tapN / tapWin in a State that grew by 24) bytes the table does not cover: 21 of alignment padding (12 still empty; revFired took 2; --camy's camTwStart 4, camPortal 1, camY 4 sit in the rest, with no row of their own) + 8 for --camy's camDy / camTan at the end (bandOffY, --camyband branch B, took 4 of the 8 bytes the State grew by and has a row: the 4 left are alignment)
 #ifndef DP_STATE_SERIAL_PROBE
 static_assert(kCoveredBytes + kStatePadBytes == sizeof(State),
               "State's members and the padding no longer add up to sizeof(State): a member was added, removed or resized. Add its row to DP_STATE_FIELDS (dp/state_serial.hpp), run tools/check_state_serial.py, "

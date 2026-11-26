@@ -157,6 +157,7 @@ inline void fillKeysHud(geode::Label* lbl) {
         "%s   hitboxes: off / on / only\n"
         "%s   replay from the start\n"
         "%s   quit to the level screen\n"
+        "%s"
         "%s  iteration map: %s\n"
         "%s   replay panel: %s\n"
         "%s / %s   %s\n"
@@ -170,6 +171,7 @@ inline void fillKeysHud(geode::Label* lbl) {
         keyName(Key::Hitboxes).c_str(),
         keyName(Key::Replay).c_str(),
         keyName(Key::Quit).c_str(),
+        showRender ? (keyName(Key::SaveQuit) + " (hold 1s)  save partial & quit\n").c_str() : "",
         keyName(Key::Itermap).c_str(), itermap::mapWanted() ? "on" : "off",
         keyName(Key::ReplayPanel).c_str(), replaypanel::modeName(),
         keyName(Key::SeekBack).c_str(), keyName(Key::SeekForward).c_str(),
@@ -205,10 +207,16 @@ inline void fillBotBadge(geode::Label* lbl) {
     // A person playing through a takeover (mod/takeover.hpp) is still a bot session -- nothing it
     // does is recorded -- and the badge says whose input it is.
     const int mode = showingSolve() ? 1 : takeover::personDriving() ? 2 : 0;
-    if (!*lbl->getString() || mode != s_wasMode) {
+    const int prof = (mode == 1) ? g_cfg.solveProfile : PROFILE_NORMAL;
+    static int s_wasProf = -1;
+    if (!*lbl->getString() || mode != s_wasMode || prof != s_wasProf) {
         s_wasMode = mode;
-        const std::string text = "GDSOLVER BOT " + s_version
-                               + (mode == 1 ? " - SOLVING" : mode == 2 ? " - HUMAN INPUT" : " - REPLAY");
+        s_wasProf = prof;
+        std::string text = "GDSOLVER BOT " + s_version
+                         + (mode == 1 ? " - SOLVING" : mode == 2 ? " - HUMAN INPUT" : " - REPLAY");
+        if (mode == 1 && prof != PROFILE_NORMAL) {
+            text += std::string(" [") + uiProfileName(prof) + "]";
+        }
         lbl->setString(text.c_str());
     }
 }
@@ -301,10 +309,15 @@ inline void fillSessionHud(geode::Label* hud) {
     // setString rebuilds the glyph sprites, so every frame is heavy (drops the spectating FPS).
     // Refreshing the display every 0.25 seconds is enough
     static auto s_lastHud = std::chrono::steady_clock::time_point{};
+    static bool s_wasHoldSq = false;
+    const bool holdingSq = (g_saveQuitHoldRem >= 0.0);
     auto nowHud = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::milliseconds>(nowHud - s_lastHud).count() < 250
+    const long long intervalMs = holdingSq ? 60 : 250;
+    if (holdingSq == s_wasHoldSq
+        && std::chrono::duration_cast<std::chrono::milliseconds>(nowHud - s_lastHud).count() < intervalMs
         && *hud->getString())
         return;
+    s_wasHoldSq = holdingSq;
     s_lastHud = nowHud;
     auto sec = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - solver::g_solveStart).count();
@@ -337,9 +350,14 @@ inline void fillSessionHud(geode::Label* hud) {
     if (showingSolve() && g_cfg.dpSolve) {
         const dpbridge::SolveProgress pr = dpbridge::progress();
         const double lvl = (len > 1.f) ? (double)len : 0.0;
-        char b[480];
-        int n = snprintf(b, sizeof(b), "iter %d   %s   %llds\n%s",
-                         g_hudIter, g_hudPhase.empty() ? "starting" : g_hudPhase.c_str(),
+        char holdLine[96] = "";
+        if (g_saveQuitHoldRem >= 0.0) {
+            snprintf(holdLine, sizeof(holdLine), ">>> HOLD %s TO SAVE & QUIT: %.1fs <<<\n",
+                     keyName(Key::SaveQuit).c_str(), g_saveQuitHoldRem);
+        }
+        char b[576];
+        int n = snprintf(b, sizeof(b), "%siter %d   %s   %llds\n%s",
+                         holdLine, g_hudIter, g_hudPhase.empty() ? "starting" : g_hudPhase.c_str(),
                          (long long)sec, coinLine);
         char detail[192];
         snprintf(detail, sizeof(detail), "best x %.0f / %.0f",

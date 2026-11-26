@@ -2191,10 +2191,480 @@ void cowPagesFixtures() {
     R.setPersistForTest(3, false);
     check(R.contentHash() == hP, "content hash: taken out of the set, it is the parent's again");
 }
+
+void twoBodyMergeHeldMask() {
+    using Edges = std::vector<std::pair<long long, int>>;
+    {
+        const auto m = dp::mergeTwoBodyEdges({}, {{50, 1}, {70, 0}}, 1, 0);
+        check(m == (Edges{{50, 3}, {70, 1}}),
+              "2p merge: P1 held across anchor stays pressed (bit 0 = 1) when only P2 emits edges");
+    }
+    {
+        const auto m = dp::mergeTwoBodyEdges({{50, 1}, {80, 0}}, {{60, 0}}, 0, 1);
+        check(m == (Edges{{50, 3}, {60, 1}, {80, 0}}),
+              "2p merge: P2 held across anchor stays pressed (bit 1 = 1) until P2 releases");
+    }
+    {
+        const auto m = dp::mergeTwoBodyEdges({{40, 0}}, {{40, 1}}, 1, 0);
+        check(m == (Edges{{40, 2}}),
+              "2p merge: same-tick P1 release and P2 press combine into one mask line");
+    }
+    {
+        const auto m = dp::mergeTwoBodyEdges({}, {}, 1, 1);
+        check(m.empty(), "2p merge: no edges -> empty plan regardless of initial holds");
+    }
+}
+
+void humanGapJumpTiming() {
+    auto mkSolid = [](int uid, double cx, double cy) {
+        dp::Obj o{};
+        o.uid = uid;
+        o.type = 0;
+        o.cx = cx;
+        o.cy = cy;
+        o.hw = 15.0;
+        o.hh = 15.0;
+        return o;
+    };
+    const std::vector<const dp::Obj*> noSlps, noPads;
+    const double half = 15.0;
+
+    {
+        std::vector<dp::Obj> platBlocks;
+        for (int i = 0; i < 10; ++i) platBlocks.push_back(mkSolid(100 + i, 15.0 + 30.0 * i, 15.0));
+        dp::XSlice slice(platBlocks);
+        for (double sc : {1.0, 1.24, 1.5}) {
+            auto evalAt = [&](double edgeDist) {
+                const double px = 300.0 - edgeDist;
+                std::vector<const dp::Obj*> near;
+                for (const auto& o : platBlocks)
+                    if (o.cx - o.hw <= px + 82.0) near.push_back(&o);
+                return dp::groundJumpTimingPenalty(near, noSlps, noPads, px, 45.0, half, sc,
+                                                   false, false, &slice, nullptr);
+            };
+            const int pEdge = evalAt(17.0 * sc);
+            const int pEarly60 = evalAt(60.0 * sc);
+            const int pEarly90 = evalAt(90.0 * sc);
+            const int pEarly140 = evalAt(140.0 * sc);
+            check(pEdge <= 2 && pEarly60 > 50 && pEarly90 > pEarly60 && pEarly140 > pEarly90,
+                  "human gap jump: penalty rises monotonically across 60..140*sc instead of dropping to 0");
+        }
+    }
+
+    {
+        std::vector<dp::Obj> platBlocks;
+        for (int i = 0; i < 12; ++i) platBlocks.push_back(mkSolid(200 + i, 15.0 + 30.0 * i, 150.0));
+        dp::XSlice slice(platBlocks);
+        const double sc = 1.5;
+        const double px = 70.0 * sc;
+        std::vector<const dp::Obj*> near;
+        for (const auto& o : platBlocks)
+            if (o.cx >= px - 70.0 && o.cx <= px + 40.0) near.push_back(&o);
+        const int pEdge = dp::groundJumpTimingPenalty(near, noSlps, noPads, 17.0 * sc, 120.0, half, sc,
+                                                      true, true, &slice, nullptr);
+        const int pEarly = dp::groundJumpTimingPenalty(near, noSlps, noPads, px, 120.0, half, sc,
+                                                       true, true, &slice, nullptr);
+        check(pEdge <= 2 && pEarly > 80,
+              "human gap jump: reverse + flipped gravity extends fwdEdge via XSlice and penalizes early jump");
+    }
+
+    {
+        std::vector<dp::Obj> flatBlocks;
+        for (int i = 0; i < 16; ++i) flatBlocks.push_back(mkSolid(300 + i, 15.0 + 30.0 * i, 15.0));
+        dp::XSlice slice(flatBlocks);
+        const double px = 60.0;
+        std::vector<const dp::Obj*> near;
+        for (int i = 0; i < 5; ++i) near.push_back(&flatBlocks[(size_t)i]);
+        const int pFlat = dp::groundJumpTimingPenalty(near, noSlps, noPads, px, 45.0, half, 1.5,
+                                                      false, false, &slice, nullptr);
+        check(pFlat == 0,
+              "human gap jump: continuous flat platform past 220*sc returns 0 even when near truncates earlier");
+    }
+}
+
+void humanPortalEnforcement() {
+    auto mkPort = [](int uid, int type, double cx, double cy, int id = 0) {
+        dp::Obj o{};
+        o.uid = uid;
+        o.type = type;
+        o.id = id;
+        o.cx = cx;
+        o.cy = cy;
+        o.hw = 17.0;
+        o.hh = 37.5;
+        return o;
+    };
+    const std::vector<const dp::Obj*> noSpds;
+    const std::vector<const dp::Obj*> noPorts;
+    const double waveHalf = dp::playerHalf(4, false);
+
+    {
+        const int types[] = {3, 4, 5, 6, 16, 17, 18, 19, 23, 24, 26, 27, 28, 33, 41, 42};
+        for (int pt : types) {
+            dp::Obj p = mkPort(100 + pt, pt, 500.0, 200.0);
+            dp::State s{};
+            s.xAbs = 499.0f;
+            s.mode = (pt == 6) ? 4 : 0;
+            if (pt == 17) s.mini = 1;
+            if (pt == 4) s.flip = 1;
+            if (pt == 24) s.dual = 1;
+            dp::State kid = s;
+            kid.xAbs = 500.5f;
+            kid.y = 390.0f;
+            const std::vector<const dp::Obj*> ports{&p};
+            const int pen = dp::humanPortalSkipPenalty(s, kid, ports, noSpds, dp::playerHalf(kid.mode, kid.mini != 0));
+            const int expect = (pt == 6) ? 100000 : 50000;
+            check(pen == expect, "human portal: dodging state-changing portal charges 50k (100k in wave)");
+        }
+
+        dp::Obj cubePort = mkPort(199, 6, 500.0, 120.0);
+        dp::State sTall{};
+        sTall.xAbs = 499.0f;
+        sTall.mode = 4;
+        sTall.mini = 1;
+        sTall.bandFloor = 0.0f;
+        sTall.bandCeil = 600.0f;
+        dp::State kidTall = sTall;
+        kidTall.xAbs = 500.5f;
+        kidTall.y = 540.0f;
+        const std::vector<const dp::Obj*> tallPorts{&cubePort};
+        check(dp::humanPortalSkipPenalty(sTall, kidTall, tallPorts, noSpds, dp::playerHalf(4, true)) == 100000,
+              "human portal: tall active band mini-wave skip >340px still charges 100k");
+
+        dp::State sPre = sTall;
+        sPre.xAbs = 440.0f;
+        sPre.action = 0;
+        sPre.edgeAge = 2;
+        dp::State kidOutside = sPre;
+        kidOutside.xAbs = 441.5f;
+        kidOutside.y = 260.0f;
+        check(dp::humanWavePortalSpamPenalty(sPre, kidOutside, 1, tallPorts, dp::playerHalf(4, true)) > 2400,
+              "human portal: mini-wave rapid toggle outside upcoming portal Y corridor charges spam surcharge");
+
+        dp::State kidInside = sPre;
+        kidInside.xAbs = 441.5f;
+        kidInside.y = 120.0f;
+        check(dp::humanWavePortalSpamPenalty(sPre, kidInside, 1, tallPorts, dp::playerHalf(4, true)) == 0,
+              "human portal: toggling aligned inside upcoming portal Y span charges 0");
+
+        dp::State sSlow = sPre;
+        sSlow.edgeAge = 14;
+        check(dp::humanWavePortalSpamPenalty(sSlow, kidOutside, 1, tallPorts, dp::playerHalf(4, true)) == 0,
+              "human portal: relaxed wave stroke (edgeAge >= 12) charges 0 pre-portal spam");
+    }
+
+    {
+        dp::Obj sp = mkPort(250, 20, 500.0, 200.0, 202);
+        dp::State s{};
+        s.xAbs = 499.0f;
+        s.dx = 1.298f;
+        s.mode = 4;
+        dp::State kid = s;
+        kid.xAbs = 500.5f;
+        kid.y = 380.0f;
+        const std::vector<const dp::Obj*> spds{&sp};
+        check(dp::humanPortalSkipPenalty(s, kid, noPorts, spds, waveHalf) == 30000,
+              "human portal: dodging speed portal in wave charges +30000");
+
+        kid.spdFired[0] = 250;
+        check(dp::humanPortalSkipPenalty(s, kid, noPorts, spds, waveHalf) == 0,
+              "human portal: speed portal already fired in spdFired charges 0");
+    }
+
+    {
+        dp::Obj cubePort = mkPort(301, 6, 500.0, 200.0);
+        const std::vector<const dp::Obj*> ports{&cubePort};
+        dp::State sCube{};
+        sCube.xAbs = 499.0f;
+        sCube.mode = 0;
+        dp::State kidCube = sCube;
+        kidCube.xAbs = 500.5f;
+        kidCube.y = 380.0f;
+        check(dp::humanPortalSkipPenalty(sCube, kidCube, ports, noSpds, dp::playerHalf(0, false)) == 0,
+              "human portal: redundant portal (already cube) charges 0");
+
+        dp::State sWave{};
+        sWave.xAbs = 499.0f;
+        sWave.mode = 4;
+        dp::State kidTaken = sWave;
+        kidTaken.xAbs = 500.5f;
+        kidTaken.y = 380.0f;
+        kidTaken.portSeen[0] = 301;
+        check(dp::humanPortalSkipPenalty(sWave, kidTaken, ports, noSpds, waveHalf) == 0,
+              "human portal: portal recorded in portSeen charges 0");
+
+        dp::State kidTp = sWave;
+        kidTp.xAbs = 580.0f;
+        kidTp.y = 380.0f;
+        check(dp::humanPortalSkipPenalty(sWave, kidTp, ports, noSpds, waveHalf) == 0,
+              "human portal: teleport jump past portal charges 0");
+    }
+
+    {
+        auto objRow = [](int id, int type, double cx, double cy, double w, double h, int uid) {
+            std::ostringstream os;
+            os << id << "," << type << "," << cx << "," << cy << "," << w << "," << h << ",0," << uid << ",0,0\n";
+            return os.str();
+        };
+        auto runScenario = [&](bool fakeTrap, bool miniWave) -> std::pair<bool, int> {
+            std::string csv = std::string(kObjHeader) + "\n";
+            csv += objRow(12, 6, 200.0, 150.0, 34.0, 75.0, 9001);
+            int nextUid = 1000;
+            for (double x = 15.0; x <= 615.0; x += 30.0) {
+                csv += objRow(1, 0, x, 15.0, 30.0, 30.0, nextUid++);
+            }
+            if (fakeTrap) {
+                csv += objRow(1, 0, 280.0, 100.0, 30.0, 200.0, 2001);
+            } else if (miniWave) {
+                csv += objRow(8, 2, 360.0, 45.0, 30.0, 30.0, 2002);
+                csv += objRow(8, 2, 510.0, 45.0, 30.0, 30.0, 2003);
+            }
+            const std::string tag = std::string(fakeTrap ? "fake_" : "intended_") + (miniWave ? "mini" : "big");
+            const std::string lvPath = writeTmp("dptest_human_portal_" + tag + ".csv", csv);
+            const std::string outPath =
+                (std::filesystem::temp_directory_path() / ("dptest_human_portal_" + tag + "_plan.txt")).string();
+            const std::string tracePath = outPath + ".trace.csv";
+            std::remove(outPath.c_str());
+            std::remove(tracePath.c_str());
+
+            const std::string startArg = miniWave ? "0,30,150,0,4,0,0,0,1" : "0,30,150,0,4,0,0";
+            std::vector<std::string> argvStr = {
+                "leveldp", lvPath, "--shadowstep=all", "--out", outPath, "--profile", "3",
+                "--start", startArg, "--startband", "30,300"
+            };
+            std::vector<char*> argvPtr;
+            for (std::string& s : argvStr) argvPtr.push_back(s.data());
+
+            const int rc = dp::cliMain((int)argvPtr.size(), argvPtr.data());
+            const bool solved = (rc == 0 && dp::g_outcome.verdict == dp::VerdictSolved);
+            int endMode = -1;
+            {
+                std::ifstream tf(tracePath);
+                std::string ln, lastLn;
+                std::getline(tf, ln);
+                while (std::getline(tf, ln)) {
+                    if (!ln.empty()) lastLn = ln;
+                }
+                if (!lastLn.empty()) {
+                    std::istringstream is(lastLn);
+                    std::string col;
+                    for (int c = 0; c <= 4 && std::getline(is, col, ','); ++c) {
+                        if (c == 4) endMode = std::atoi(col.c_str());
+                    }
+                }
+            }
+            std::remove(outPath.c_str());
+            std::remove(tracePath.c_str());
+            std::remove(lvPath.c_str());
+            return {solved, endMode};
+        };
+
+        const auto intendedBig = runScenario(false, false);
+        check(intendedBig.first && intendedBig.second == 0,
+              "human portal E2E: survivable big-Wave->Cube corridor enters intended Cube portal instead of dodging");
+
+        const auto fakeBig = runScenario(true, false);
+        check(fakeBig.first && fakeBig.second == 4,
+              "human portal E2E: lethal fake Cube portal still dodges as big-Wave and clears level");
+
+        const auto intendedMini = runScenario(false, true);
+        check(intendedMini.first && intendedMini.second == 0,
+              "human portal E2E: survivable Mini-Wave->Cube corridor enters Cube portal instead of spamming past");
+
+        const auto fakeMini = runScenario(true, true);
+        check(fakeMini.first && fakeMini.second == 4,
+              "human portal E2E: lethal fake Cube portal still dodges as Mini-Wave and clears level");
+    }
+
+    {
+        dp::State sPre{};
+        sPre.xAbs = 195.0f; sPre.y = 150.0f; sPre.mode = 4;
+        dp::State kidCenter = sPre, kidRim = sPre;
+        kidCenter.xAbs = 200.0f; kidCenter.y = 152.0f; kidCenter.portSeen[0] = 9101;
+        kidRim.xAbs    = 200.0f; kidRim.y    = 186.0f; kidRim.portSeen[0]    = 9101;
+        dp::Obj cp{};
+        cp.uid = 9101; cp.type = 6; cp.cx = 200.0; cp.cy = 150.0; cp.hw = 17.0; cp.hh = 37.5;
+        std::vector<const dp::Obj*> cPorts{&cp};
+        const double wh = dp::playerHalf(4, false);
+        check(dp::humanPortalCenterPenalty(sPre, kidCenter, cPorts, wh, wh) == 0,
+              "human portal center: centered portal entry charges 0");
+        check(dp::humanPortalCenterPenalty(sPre, kidRim, cPorts, wh, wh) > 0,
+              "human portal center: outer-rim portal entry charges > 0");
+
+        auto rotRow = [](int id, int type, double cx, double cy, double w, double h, int uid, double rot,
+                         double w0 = 0.0, double h0 = 0.0) {
+            std::ostringstream os;
+            os << id << "," << type << "," << cx << "," << cy << "," << w << "," << h
+               << ",0," << uid << ",0," << rot << ",,,,,,"
+               << (w0 > 0.0 ? std::to_string(w0) : "") << ","
+               << (h0 > 0.0 ? std::to_string(h0) : "") << "\n";
+            return os.str();
+        };
+        auto runRotPortal = [&](double pd) -> bool {
+            std::string csv = std::string(kObjHeader) + ",s0,s1,s2,s3,s4,w0,h0\n";
+            // Unturned reference so shadow_step resolves the 12-id box ratio without obb.txt,
+            // plus tilted portal at (200,150) rot=25 with its rotated AABB bound.
+            csv += rotRow(12, 6, -500.0, 150.0, 34.0, 75.0, 9200, 0.0, 34.0, 75.0);
+            csv += rotRow(12, 6, 200.0, 150.0, 62.51, 82.34, 9201, 25.0, 34.0, 75.0);
+            int uid = 9300;
+            for (double x = 15.0; x <= 515.0; x += 30.0) {
+                csv += rotRow(1, 0, x, 15.0, 30.0, 30.0, uid++, 0.0);
+            }
+            csv += rotRow(1, 0, 280.0, 95.0, 30.0, 160.0, uid++, 0.0);
+            csv += rotRow(1, 0, 200.0, 250.0, 120.0, 100.0, uid++, 0.0);
+            const std::string lvPath = writeTmp("dptest_rot_portaldodge.csv", csv);
+            const std::string outPath =
+                (std::filesystem::temp_directory_path() / "dptest_rot_portaldodge_plan.txt").string();
+            std::remove(outPath.c_str());
+            std::vector<std::string> args = {
+                "leveldp", lvPath, "--shadowstep=all", "--out", outPath,
+                "--start", "0,30,150,0,4,0,0", "--startband", "30,300"
+            };
+            if (pd > 0.0) {
+                args.push_back("--portaldodge");
+                args.push_back(std::to_string(pd));
+            }
+            std::vector<char*> ptrs;
+            for (auto& a : args) ptrs.push_back(a.data());
+            const int rc = dp::cliMain((int)ptrs.size(), ptrs.data());
+            const bool solved = (rc == 0 && dp::g_outcome.verdict == dp::VerdictSolved);
+            std::remove(outPath.c_str());
+            std::remove((outPath + ".trace.csv").c_str());
+            std::remove(lvPath.c_str());
+            return solved;
+        };
+        check(runRotPortal(0.0),
+              "portaldodge E2E: baseline (0 margin) allows squeezing over tilted cube portal");
+        check(!runRotPortal(15.0),
+              "portaldodge E2E: --portaldodge 15 blocks tight wave squeeze over tilted cube portal");
+    }
+}
+
+void profileDedupePromotion() {
+    auto objRow = [](int id, int type, double cx, double cy, double w, double h, int uid) {
+        std::ostringstream os;
+        os << id << "," << type << "," << cx << "," << cy << "," << w << "," << h << ",0," << uid << ",0,0\n";
+        return os.str();
+    };
+    auto countPlanLines = [](const std::string& planPath) {
+        std::ifstream f(planPath);
+        std::string ln;
+        int n = 0;
+        while (std::getline(f, ln)) {
+            if (ln.rfind("input=", 0) == 0) ++n;
+        }
+        return n;
+    };
+
+    {
+        dp::State a{}, b{};
+        a.mode = 1; b.mode = 1;
+        a.tight = 10; b.tight = 10;
+        a.edgeAge = 2; b.edgeAge = 10;
+        const int prev = dp::g_solveProfile;
+        dp::g_solveProfile = 2;
+        check(dp::betterProfileState(a, b) && !dp::betterProfileState(b, a),
+              "profile tie-break: Max Clicks prefers fresher toggle (smaller edgeAge)");
+        dp::g_solveProfile = 1;
+        check(dp::betterProfileState(b, a) && !dp::betterProfileState(a, b),
+              "profile tie-break: Min Clicks prefers steadier hold (larger edgeAge)");
+        dp::g_solveProfile = prev;
+    }
+
+    std::string csv = std::string(kObjHeader) + "\n";
+    int uid = 5000;
+    for (double x = 15.0; x <= 615.0; x += 30.0) {
+        csv += objRow(1, 0, x, 15.0, 30.0, 30.0, uid++);
+        csv += objRow(1, 0, x, 315.0, 30.0, 30.0, uid++);
+    }
+    const std::string lvPath = writeTmp("dptest_profile_corridor.csv", csv);
+
+    auto runProf = [&](int prof, const char* startArg, const char* tag) {
+        const std::string outPath =
+            (std::filesystem::temp_directory_path() / (std::string("dptest_prof_") + tag + "_plan.txt")).string();
+        const std::string tracePath = outPath + ".trace.csv";
+        std::remove(outPath.c_str());
+        std::remove(tracePath.c_str());
+        std::string pStr = std::to_string(prof);
+        std::vector<std::string> argvStr = {
+            "leveldp", lvPath, "--shadowstep=all", "--out", outPath, "--profile", pStr,
+            "--start", startArg, "--startband", "30,300"
+        };
+        std::vector<char*> argvPtr;
+        for (std::string& s : argvStr) argvPtr.push_back(s.data());
+        const int rc = dp::cliMain((int)argvPtr.size(), argvPtr.data());
+        const bool solved = (rc == 0 && dp::g_outcome.verdict == dp::VerdictSolved);
+        const int inputs = countPlanLines(outPath);
+        double maxOff = 0.0;
+        {
+            std::ifstream tf(tracePath);
+            std::string ln;
+            std::getline(tf, ln);
+            while (std::getline(tf, ln)) {
+                if (ln.empty()) continue;
+                std::istringstream is(ln);
+                std::string col;
+                double y = 165.0;
+                for (int c = 0; c <= 2 && std::getline(is, col, ','); ++c) {
+                    if (c == 2) y = std::atof(col.c_str());
+                }
+                maxOff = std::max(maxOff, std::fabs(y - 165.0));
+            }
+        }
+        std::remove(outPath.c_str());
+        std::remove(tracePath.c_str());
+        return std::tuple<bool, int, double>{solved, inputs, maxOff};
+    };
+
+    const auto [minOk, minInputs, minOff] = runProf(1, "0,30,45,0,0,0,0", "min");
+    (void)minOff;
+    check(minOk && minInputs == 0, "profile E2E: Min Clicks clears flat floor with 0 clicks");
+
+    const auto [maxOk, maxInputs, maxOff] = runProf(2, "0,30,45,0,0,0,0", "max");
+    (void)maxOff;
+    check(maxOk && maxInputs >= 6, "profile E2E: Max Clicks clears flat floor with active clicking");
+
+    const auto [ctrOk, ctrInputs, ctrOff] = runProf(4, "0,30,165,0,1,0,0", "ctr");
+    (void)ctrInputs;
+    check(ctrOk && ctrOff < 75.0, "profile E2E: Centerline Ship keeps route near corridor center");
+
+    {
+        std::string gcsv = std::string(kObjHeader) + "\n";
+        int guid = 6000;
+        for (double x = 15.0; x <= 815.0; x += 30.0) {
+            gcsv += objRow(1, 0, x, 15.0, 30.0, 30.0, guid++);
+        }
+        for (double y = 45.0; y <= 345.0; y += 30.0) {
+            gcsv += objRow(8, 2, 500.0, y, 30.0, 30.0, guid++);
+        }
+        const std::string gLv = writeTmp("dptest_goalx.csv", gcsv);
+        const std::string gOut = (std::filesystem::temp_directory_path() / "dptest_goalx_plan.txt").string();
+        std::remove(gOut.c_str());
+        std::remove((gOut + ".trace.csv").c_str());
+        std::vector<std::string> argvStr = {
+            "leveldp", gLv, "--shadowstep=all", "--out", gOut, "--goalx", "300", "--start", "0,30,45,0,0,0,0"
+        };
+        std::vector<char*> argvPtr;
+        for (std::string& s : argvStr) argvPtr.push_back(s.data());
+        const int rc = dp::cliMain((int)argvPtr.size(), argvPtr.data());
+        check(rc == 0 && dp::g_outcome.verdict == dp::VerdictSolved && dp::g_outcome.deepX < 400.0,
+              "goalx E2E: custom goalX=300 clears before downstream wall at x=500");
+        std::remove(gOut.c_str());
+        std::remove((gOut + ".trace.csv").c_str());
+        std::remove(gLv.c_str());
+    }
+
+    std::remove(lvPath.c_str());
+}
+
 int main(int argc, char** argv) {    if (argc > 2 && !std::strcmp(argv[1], "--tog-corpus")) return togCorpus(argc, argv);
     if (argc > 2 && !std::strcmp(argv[1], "--groups-corpus")) return groupsCorpus(argc, argv);
     if (argc > 3 && !std::strcmp(argv[1], "--groups-inc")) return groupsIncReal(argc, argv);
+    humanGapJumpTiming();
+    humanPortalEnforcement();
+    profileDedupePromotion();
     formulaRecProvenance();
+    twoBodyMergeHeldMask();
     slamBoxIdentity();
     rotBoostDontSlide();
     runLifecycle();

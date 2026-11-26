@@ -1776,11 +1776,12 @@ inline void buildPois(GJBaseGameLayer* l, bool obbNoLatch = false, bool areaTarg
            << "\n";
         // ...and a two-player level's own mode (kA10), written only then so that every other level's file is the bytes it was:
         // the solver gives the second body a button of its own and takes the gravity link away (dp frames.hpp g_twoPlayer).
-        if (ls->m_twoPlayerMode) sf << "twoPlayer=1\n";
+        const bool twoPlayer = ls->m_twoPlayerMode || (l->m_level && l->m_level->m_twoPlayerMode);
+        if (twoPlayer) sf << "twoPlayer=1\n";
         // ...and Enable Player Squeeze (kA31, LevelSettingsObject +0x1c9), likewise only when set: GJBaseGameLayer's level start stores `!(+0x1c9 || layer+0x317e)` into both
         // players' +0xc48 and PlayerObject::postCollision's crush rule runs only while that is 0 (dp speed.hpp g_enablePlayerSqueeze).
         if (ls->m_enablePlayerSqueeze) sf << "enablePlayerSqueeze=1\n";
-        g_levelTwoPlayer = ls->m_twoPlayerMode;
+        g_levelTwoPlayer = twoPlayer;
         log::info("levelsettings: fixRadiusCollision={} platformer={} "
                   "reverse={}", (int)ls->m_fixRadiusCollision,
                   (int)ls->m_platformerMode, (int)ls->m_reverseGameplay);

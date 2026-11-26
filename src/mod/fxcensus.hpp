@@ -165,6 +165,46 @@ inline const char* uiSearchCfg(int s) {    // as cfg dpsearch and dp's --search 
     }
 }
 inline int g_uiSearch = UI_SEARCH_DP;
+
+// Training profiles (Solve mode): different solving heuristics and playstyles.
+enum SolveProfile {
+    PROFILE_NORMAL = 0,
+    PROFILE_MIN_CLICKS = 1,
+    PROFILE_MAX_CLICKS = 2,
+    PROFILE_HUMAN = 3,
+    PROFILE_CENTERLINE = 4,
+    PROFILE_CLOSE_CALL = 5,
+    PROFILE_COUNT = 6
+};
+
+inline const char* uiProfileName(int p) {
+    switch (p) {
+        case PROFILE_MIN_CLICKS: return "Min Clicks";
+        case PROFILE_MAX_CLICKS: return "Max Clicks";
+        case PROFILE_HUMAN: return "Human";
+        case PROFILE_CENTERLINE: return "Centerline";
+        case PROFILE_CLOSE_CALL: return "Close-Call";
+        default: return "Normal";
+    }
+}
+
+inline const char* describeProfile(int p) {
+    switch (p) {
+        case PROFILE_MIN_CLICKS: return "Min Clicks: fewest clicks, long smooth glides";
+        case PROFILE_MAX_CLICKS: return "Max Clicks: spam challenge (highest safe CPS)";
+        case PROFILE_HUMAN: return "Human: easiest route, relaxed CPS, centred, early clicks";
+        case PROFILE_CENTERLINE: return "Centerline: hugs center of flight corridors";
+        case PROFILE_CLOSE_CALL: return "Close-Call: near-miss showcase along hazards";
+        default: return "Normal: standard reachability solver";
+    }
+}
+
+inline int g_uiProfile = PROFILE_NORMAL;
+// Partial / StartPos range selections from Solve Options (hooks_playmenu.cpp).
+inline bool g_uiPartialRange = false;
+inline int g_uiStartPosIdx = -1;   // -1 = Level Start (0%), >= 0 = StartPos #k sorted by x
+inline float g_uiGoalStopX = -1.f; // > 0 = Finish StartPos world X (-1 = Level End 100%)
+inline int g_uiGoalStopIdx = -1;   // -1 = Level End (100%), >= 0 = StartPos #k sorted by x
 // The level the menu's Start was pressed for. PlayLayer::init starts a session only for this
 // level, and disarms it whatever it decides: the choice is made per play, not left standing.
 // A standing mode is what the old corner panel had, and there it was visible; a menu that has

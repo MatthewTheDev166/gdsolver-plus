@@ -1089,7 +1089,7 @@ struct State {
     // not of the state, and two states that differ only in it answer every
     // future input identically. Keying on it would split every cell by history
     // and multiply the frontier for nothing.
-    uint16_t tight = 0;
+    uint32_t tight = 0;
     // GD's m_jumpBuffered (PlayerObject+0x985), mirrored. Set by pushButton,
     // cleared by releaseButton, by the ball's tap and by a ring that consumes the
     // press -- and NOT set at all while controls are off, because pushButton
@@ -1531,7 +1531,7 @@ struct State {
 constexpr size_t kStateBytes =
     (680u +(size_t)(kTouchBits - 32) * sizeof(uint16_t)
           + (sizeof(TouchMask) - sizeof(uint32_t))
-          + 2u * (sizeof(GravLatch) - sizeof(Bits<128>)) + 7u) / 8u * 8u + 8u + 8u + 16u + 8u + 8u + 8u + 8u + 8u + 8u + 8u + 8u + 8u;
+          + 2u * (sizeof(GravLatch) - sizeof(Bits<128>)) + 7u) / 8u * 8u + 8u + 8u + 16u + 8u + 8u + 8u + 8u + 8u + 8u + 8u + 8u + 8u + 8u;
 static_assert(sizeof(State) == kStateBytes,
               "State changed size. If the new field ACCUMULATES over ticks, "
               "seed it in the --start anchor scan, print it in --seeddump, and "

@@ -1730,6 +1730,9 @@ inline int cliMainOnce(int argc, char** argv) {
     for (int i = 2; i + 1 < argc; ++i) {
         if (!std::strcmp(argv[i], "--wavetidy")) g_waveTidy = std::atof(argv[i + 1]);
         if (!std::strcmp(argv[i], "--wavetoggle")) g_waveToggle = std::atoi(argv[i + 1]);
+        if (!std::strcmp(argv[i], "--profile")) g_solveProfile = std::atoi(argv[i + 1]);
+        if (!std::strcmp(argv[i], "--goalx")) g_customGoalX = std::atof(argv[i + 1]);
+        if (!std::strcmp(argv[i], "--portaldodge")) g_portalDodgeMargin = std::atof(argv[i + 1]);
         if (!std::strcmp(argv[i], "--startedge")) g_startEdge = std::atoi(argv[i + 1]);
     }
     for (int i = 2; i < argc; ++i)
@@ -1825,6 +1828,7 @@ inline int cliMainOnce(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--minpulse")) g_minPulse = std::atoi(argv[i + 1]);
         if (!std::strcmp(argv[i], "--inputgrid")) g_inputGrid = std::atoi(argv[i + 1]);
         if (!std::strcmp(argv[i], "--wavepulse")) g_wavePulse = std::atoi(argv[i + 1]);   // the wave-behaviour option
+        if (!std::strcmp(argv[i], "--flypulse")) g_flyPulse = std::atoi(argv[i + 1]);
         if (!std::strcmp(argv[i], "--shipvq")) g_shipVq = std::atof(argv[i + 1]);
         if (!std::strcmp(argv[i], "--snaplog")) snapLogPath = argv[i + 1];
         // [2026-08-31] --shipceil / --ceil / --flyfloor / --ufoceil ARE GONE.
@@ -6727,6 +6731,10 @@ inline int cliMainOnce(int argc, char** argv) {
                     g_endPortalX, zoom, gdGoal, goalX);
         goalX = gdGoal;
     }
+    if (g_customGoalX > 0.0) {
+        goalX = g_customGoalX;
+        std::fprintf(stderr, "[goalx] custom goalX=%.2f (level maxX=%.2f)\n", goalX, L.maxX);
+    }
     // ---- --coins: route through the level's coins as well as to its end -----
     //
     // Two things and no more. A coin is COLLECTED when the player's own rect
@@ -8071,6 +8079,7 @@ inline int cliMainOnce(int argc, char** argv) {
         init.action = a2;
         init.action2 = a1;
         init.held = (g_startAct2 >= 0) ? (uint8_t)g_startAct2 : (uint8_t)0;   // the searched body's own hold; the ghost's is the levels file's
+        if (startStateLoaded) g_planPrevHeld = (int)init.held;
         std::printf("swapbodies: the second player is the searched body (y=%.3f vy=%.3f flip=%d mode=%d), the first the ghost (y2=%.3f)\n",
                     (double)init.y, (double)init.vy, (int)init.flip, (int)init.mode, (double)init.y2);
     }
@@ -11945,6 +11954,29 @@ inline int twoBodyFromBirth(int argc, char** argv, const std::string& outPath, l
     return rc2 != 0 ? rc2 : rc1;
 }
 
+/// Merge Pass 1 (`e1`) and Pass 2 (`e2`) per-body edges into combined 2-bit masks,
+/// starting from each player's held state at `t0` (`startHeld1`, `startHeld2`).
+inline std::vector<std::pair<long long, int>> mergeTwoBodyEdges(
+    const std::vector<std::pair<long long, int>>& e1,
+    const std::vector<std::pair<long long, int>>& e2,
+    int startHeld1,
+    int startHeld2) {
+    struct Ev { long long t; int bit; int lvl; };
+    std::vector<Ev> ev;
+    ev.reserve(e1.size() + e2.size());
+    for (const auto& e : e1) ev.push_back({e.first, 1, e.second & 1});
+    for (const auto& e : e2) ev.push_back({e.first, 2, e.second & 1});
+    std::stable_sort(ev.begin(), ev.end(), [](const Ev& a, const Ev& b) { return a.t < b.t; });
+    std::vector<std::pair<long long, int>> merged;
+    int mask = (startHeld1 ? 1 : 0) | (startHeld2 ? 2 : 0);
+    for (size_t i = 0; i < ev.size(); ++i) {
+        mask = ev[i].lvl ? (mask | ev[i].bit) : (mask & ~ev[i].bit);
+        if (i + 1 < ev.size() && ev[i + 1].t == ev[i].t) continue;
+        merged.emplace_back(ev[i].t, mask);
+    }
+    return merged;
+}
+
 inline int cliMain(int argc, char** argv) {
     g_callStages.clear();
     g_rjCall = RejoinCallNote{};
@@ -11968,10 +12000,20 @@ inline int cliMain(int argc, char** argv) {
     std::vector<long long> swS;   // the presses of the switch body (edge ticks), ascending
     std::string replayPlan;
     long long swT0 = 0;           // the call's start tick (--start's first field): presses before it are the plan's own, and stay
+    int startHeld1 = 0;
+    int startHeld2 = 0;
     std::vector<long long> swPre;   // --switchpre: every press of the plan the caller holds
     for (int i = 0; i + 1 < argc; ++i) {
         if (!std::strcmp(argv[i], "--replay")) replayPlan = argv[i + 1];
-        if (!std::strcmp(argv[i], "--start")) swT0 = std::atoll(argv[i + 1]);
+        if (!std::strcmp(argv[i], "--start")) {
+            swT0 = std::atoll(argv[i + 1]);
+            double sf[7] = {0, 0, 0, 0, 0, 0, 0};
+            if (std::sscanf(argv[i + 1], "%lf,%lf,%lf,%lf,%lf,%lf,%lf",
+                            &sf[0], &sf[1], &sf[2], &sf[3], &sf[4], &sf[5], &sf[6]) >= 7) {
+                startHeld1 = ((int)sf[6] != 0) ? 1 : 0;
+            }
+        }
+        if (!std::strcmp(argv[i], "--startact2")) startHeld2 = (std::atoi(argv[i + 1]) != 0) ? 1 : 0;
         if (!std::strcmp(argv[i], "--switchpre"))
             for (const char* q = argv[i + 1]; *q; ) {
                 swPre.push_back(std::atoll(q));
@@ -12335,21 +12377,13 @@ inline int cliMain(int argc, char** argv) {
             for (const auto& e : raw) e2.emplace_back(e.first, (e.second >> 1) & 1);
     }
     // merge
-    struct Ev { long long t; int bit; int lvl; };
-    std::vector<Ev> ev;
-    for (const auto& e : e1) ev.push_back({e.first, 1, e.second & 1});
-    for (const auto& e : e2) ev.push_back({e.first, 2, e.second});
-    std::stable_sort(ev.begin(), ev.end(), [](const Ev& a, const Ev& b) { return a.t < b.t; });
-    if (ev.empty()) {
+    const auto merged = mergeTwoBodyEdges(e1, e2, startHeld1, startHeld2);
+    if (merged.empty()) {
         std::remove(outPath.c_str());   // neither body presses: no plan file, as a single body's call writes none
     } else {
         std::ofstream mf(outPath, std::ios::trunc);
-        int mask = 0;
-        for (size_t i = 0; i < ev.size(); ++i) {
-            mask = ev[i].lvl ? (mask | ev[i].bit) : (mask & ~ev[i].bit);
-            if (i + 1 < ev.size() && ev[i + 1].t == ev[i].t) continue;
-            mf << "input=" << ev[i].t << ',' << mask << "\n";
-        }
+        for (const auto& p : merged)
+            mf << "input=" << p.first << ',' << p.second << "\n";
     }
     std::remove((outPath + ".b2").c_str());
     std::remove((outPath + ".b2.trace.csv").c_str());
@@ -12358,7 +12392,7 @@ inline int cliMain(int argc, char** argv) {
     const bool firstWorse = out1.verdict < out2.verdict
                             || (out1.verdict == out2.verdict && out1.deepT >= 0 && (out2.deepT < 0 || out1.deepT < out2.deepT));
     if (rc2 == 0 && firstWorse) g_outcome = out1;
-    std::printf("twobody: merged plan %zu lines -> %s (first body verdict=%d deepT=%lld, second verdict=%d deepT=%lld)\n", ev.size(), outPath.c_str(),
+    std::printf("twobody: merged plan %zu lines -> %s (first body verdict=%d deepT=%lld, second verdict=%d deepT=%lld)\n", merged.size(), outPath.c_str(),
                 (int)out1.verdict, out1.deepT, (int)out2.verdict, out2.deepT);
     std::fflush(stdout);
     return rjStamp(rc2 != 0 ? rc2 : rc);

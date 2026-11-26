@@ -458,7 +458,8 @@ inline void record(GJBaseGameLayer* l, long long t) {
     r.onGround2 = p->m_isOnGround2 ? 1 : 0;
     r.flip = p->m_isUpsideDown ? 1 : 0;
     r.mini = (p->m_vehicleSize < 0.9f) ? 1 : 0;
-    r.dual = l->m_gameState.m_isDualMode ? 1 : 0;
+    const bool p2InPlay = l->m_gameState.m_isDualMode && l->m_player2 && l->m_player2 != l->m_player1;
+    r.dual = p2InPlay ? 1 : 0;
     r.y2 = (r.dual && l->m_player2) ? l->m_player2->getPositionY() : 0.f;
     r.x2 = (r.dual && l->m_player2) ? l->m_player2->getPositionX() : 0.f;
     r.v2 = (r.dual && l->m_player2) ? (float)l->m_player2->m_yVelocity : 0.f;
@@ -1519,11 +1520,15 @@ inline int g_escalations = 0;         // how many times the ladder has been give
 // is the deepest death at the time, and a death kWaveRelaxSpan px past it (iteration handler) puts the wave
 // behaviour back, so one forced crawl does not end it for the rest of the level.
 inline bool g_waveRelaxed = false;
+inline int g_glitchStage = 0;         // Scaling stage (1.0 -> 0.5 -> 0.25 -> 0.0) for portalDodge
+constexpr float kGlitchStageScale[] = {1.f, .5f, .25f, 0.f};
+constexpr int kGlitchStages = 4;
 inline float g_waveRelaxedX = -1.f;   // the deepest death when it was eased: the stretch is measured from it
 constexpr float kWaveRelaxSpan = 900.f;
-// Is there something left to ease? The wave's behaviour, while it is on.
+// Is there something left to ease? The wave/fly behaviour or portal-dodge margin, while active.
 inline bool glitchSoftenable() {
-    return g_cfg.wavePulse > 1 && !g_waveRelaxed;
+    return ((g_cfg.wavePulse > 1 || g_cfg.flyPulse > 1) && !g_waveRelaxed)
+        || (g_cfg.portalDodge > 0.0 && g_glitchStage < kGlitchStages - 1);
 }
 
 // Nine significant digits, the same precision the dump is written with. Coarser than that and
@@ -3532,11 +3537,22 @@ inline std::vector<std::string> baseArgs(const std::string& out,
     // ...and the glitch-avoid mode, the user's choice (Config::glitchDeco). Searches only:
     // the fixup resim builds its own argv and must not die where the game does not.
     if (g_cfg.glitchDeco) a.push_back("--glitchdeco");
-    // ...and the wave's behaviour (the menu's third choice), until a search with it found no anchor (escalate).
+    // ...and the wave/flying behaviour (the menu's third choice), until a search with it found no anchor (escalate).
     if (!g_waveRelaxed) {
         if (g_cfg.wavePulse > 1) {
             a.push_back("--wavepulse");
             a.push_back(std::to_string(g_cfg.wavePulse));
+        }
+        if (g_cfg.flyPulse > 1) {
+            a.push_back("--flypulse");
+            a.push_back(std::to_string(g_cfg.flyPulse));
+        }
+    }
+    if (g_cfg.portalDodge > 0.0) {
+        const double pd = g_cfg.portalDodge * kGlitchStageScale[g_glitchStage];
+        if (pd > 0.0) {
+            a.push_back("--portaldodge");
+            a.push_back(num(pd));
         }
     }
     // ...and dp's --ladderovercapstop wherever dphorizongrow acts (a level of dphorizongrowmin ticks or more): it was made for the grown plans of a very long level, and on the official levels it cost
@@ -3550,6 +3566,14 @@ inline std::vector<std::string> baseArgs(const std::string& out,
     if (g_cfg.waveToggle > 0) {
         a.push_back("--wavetoggle");
         a.push_back(std::to_string(g_cfg.waveToggle));
+    }
+    if (g_cfg.solveProfile != 0) {
+        a.push_back("--profile");
+        a.push_back(std::to_string(g_cfg.solveProfile));
+    }
+    if (g_cfg.partialRange && g_cfg.goalStopX > 0.f) {
+        a.push_back("--goalx");
+        a.push_back(std::to_string(g_cfg.goalStopX));
     }
     addWorldArgs(a);
     // cfg dprejoinwatch: the model's trace of the plan that last died,
@@ -6784,8 +6808,8 @@ inline bool runLadder(long long dt) {
         }
         a.push_back("--start");
         a.push_back(arg);
-        // ...and how long the button had been as it is, so the wave's button floor holds across the join.
-        if (g_cfg.wavePulse > 1 && !g_waveRelaxed) {
+        // ...and how long the button had been as it is, so the wave/human button floor holds across the join.
+        if ((g_cfg.wavePulse > 1 && !g_waveRelaxed) || g_cfg.solveProfile == PROFILE_HUMAN) {
             const int ea = edgeAgeAt(t0);
             if (ea >= 0) { a.push_back("--startedge"); a.push_back(std::to_string(ea)); }
         }
@@ -8101,6 +8125,7 @@ inline void start(GJBaseGameLayer* l) {
     g_recordRequest = false;
     g_coldRestarted = false;
     g_waveRelaxed = false;
+    g_glitchStage = 0;
     g_waveRelaxedX = -1.f;
     g_escalations = 0;
     g_capTier = 0;
@@ -9154,6 +9179,38 @@ inline void mapTail(const std::vector<AnchorRow>& rows, int iter, int kind, long
             break;
         }
     itermap::endPath();
+
+    // Player 2 trajectory: record contiguous dual/2-player segments with KindP2 flag
+    long long segStart = -1;
+    auto flushP2 = [&](long long segEnd) {
+        if (segEnd <= segStart) return;
+        const long long p2Step = std::max<long long>(itermap::kPathStep, (segEnd - segStart + room - 1) / room);
+        itermap::beginPath(iter, kind | itermap::KindP2);
+        long long p2Last = -1;
+        for (long long j = segStart; j <= segEnd; j += p2Step) {
+            if (rows[(size_t)j].valid) {
+                itermap::addPathPoint(rows[(size_t)j].x2, rows[(size_t)j].y2);
+                p2Last = j;
+            }
+        }
+        for (long long j = segEnd; j > p2Last; --j) {
+            if (rows[(size_t)j].valid) {
+                itermap::addPathPoint(rows[(size_t)j].x2, rows[(size_t)j].y2);
+                break;
+            }
+        }
+        itermap::endPath();
+    };
+    for (long long k = p0; k <= p1; ++k) {
+        const bool p2Active = rows[(size_t)k].valid && rows[(size_t)k].dual != 0;
+        if (p2Active && segStart < 0) {
+            segStart = k;
+        } else if (!p2Active && segStart >= 0) {
+            flushP2(k - 1);
+            segStart = -1;
+        }
+    }
+    if (segStart >= 0) flushP2(p1);
 }
 
 // The round that CLEARED. Every other round is put on the map by onDeath, and this one never
@@ -9169,7 +9226,8 @@ inline void mapTail(const std::vector<AnchorRow>& rows, int iter, int kind, long
 // A clear on the FIRST plan too, where this tail is the whole map: from tick 0 to the finish,
 // with no death or fixup beside it (itermap::emptyLocked counts it, so the map is saved).
 inline void mapClear(long long t, bool byFlight) {
-    mapTail(anchors::g_live, g_iter + 1, itermap::KindDeeper, byFlight ? g_ckT0 : g_anchorT, t);
+    (void)byFlight;
+    mapTail(anchors::g_live, g_iter + 1, itermap::KindDeeper, 0, t);
 }
 
 // cfg `coinmisspost` (config.hpp). Where a recorded attempt came closest to coin `ci`: the
@@ -9784,6 +9842,7 @@ inline void onDeath(long long dt, float deathX) {
     // ...and the wave's behaviour comes back kWaveRelaxSpan px past the wall that dropped it.
     if (g_waveRelaxed && g_waveRelaxedX >= 0.f && deathX > g_waveRelaxedX + kWaveRelaxSpan) {
         g_waveRelaxed = false;
+        g_glitchStage = 0;
         g_waveRelaxedX = -1.f;
         writeResult("dpsolve:   past that stretch - Avoid glitches is back as chosen");
     }
@@ -10624,7 +10683,8 @@ inline bool startBootstrapRecord() {
                  grouptrace::g_objs.size());
         writeResult(b);
     }
-    const bool spawnOnly = !levelNeedsBootstrap() && solver::g_levelTwoPlayer;
+    const bool partialSpawn = (g_cfg.partialRange && g_cfg.startPosIdx >= 0);
+    const bool spawnOnly = !levelNeedsBootstrap() && (solver::g_levelTwoPlayer || partialSpawn);
     if (!levelNeedsBootstrap() && !spawnOnly) return false;
     g_bootSpawnOnly = spawnOnly;
     g_bootKillerQuiet = 0;
@@ -10912,11 +10972,21 @@ inline bool escalate() {
     // step holds for the stretch only (the iteration handler puts it back kWaveRelaxSpan px past the wall).
     // Said in result.txt and on screen. Not counted against the backstop below.
     if (glitchSoftenable()) {
+        const bool waveStep = (g_cfg.wavePulse > 1 || g_cfg.flyPulse > 1) && !g_waveRelaxed;
         const char* what;
-        g_waveRelaxed = true;
-        what = "the wave behaviour (button floor) is dropped for this stretch";
-        notify::show("gdsolver: no route kept the wave's behaviour - continuing with Avoid glitches only",
-                     NotificationIcon::Warning, 6.f);
+        if (waveStep) {
+            g_waveRelaxed = true;
+            what = "the pulse/corridor limits (wave/flying pulse floor) are dropped for this stretch";
+            notify::show("gdsolver: no route kept the pulse/corridor limits - relaxing them for this stretch",
+                         NotificationIcon::Warning, 6.f);
+        } else {
+            ++g_glitchStage;
+            what = g_glitchStage < kGlitchStages - 1
+                       ? "portal-dodge margin halved for this stretch"
+                       : "portal-dodge margin dropped for this stretch";
+            notify::show("gdsolver: relaxing Human portal-dodge margin for this stretch",
+                         NotificationIcon::Warning, 6.f);
+        }
         g_waveRelaxedX = g_hudVerifiedX;
         writeResult(std::string("dpsolve:   no anchor - ") + what);
         g_curBackoff = kBackOff;
@@ -11225,6 +11295,8 @@ inline void poll() {
         g_showRequest = false;
         g_paused = false;
         clearManualPause();          // do not start the showing frozen on someone's F2
+        itermap::endSeek("showing_solution");
+        resetTransportHotkeys();
         watchSpeedSet(WATCH_SPEED_1X);
         g_hudPhase = "replaying the solution";
         g_cfg.maxAttempts = g_finishedAttempts + 1;   // show it once, then the session ends
@@ -11530,6 +11602,89 @@ inline void poll() {
                  "it in the game", sec, g_plan.size());
         notify::show(note, NotificationIcon::Info, 4.f);
     }
+}
+
+/// Save the deepest GD-verified partial plan and exit cleanly to the level screen (Hold Right Ctrl).
+inline bool savePartialAndQuit() {
+    if (!g_cfg.dpSolve || g_sessionOver) return false;
+    g_stop = true;
+    dpbridge::cancelSearch(false);
+    g_dpSolving = false;
+
+    std::vector<InputCmd> partial;
+    long long stopTick = -1;
+    float stopX = g_hudVerifiedX;
+    bool tookLiveFlight = false;
+
+    auto* pl = PlayLayer::get();
+    const float liveX = (pl && pl->m_player1) ? pl->m_player1->getPositionX() : 0.f;
+
+    if (!g_dpShowSolution && !g_recordAttempt && g_tick > 10 && g_tick > g_bestDeath
+        && !g_cfg.inputs.empty() && liveX > 0.f) {
+        stopTick = g_tick;
+        stopX = std::max(stopX, liveX);
+        tookLiveFlight = true;
+        for (const InputCmd& c : g_cfg.inputs) {
+            if (c.step < stopTick) partial.push_back(c);
+        }
+    } else if (g_bestDeath > 0 && !g_best.empty()) {
+        stopTick = g_bestDeath;
+        stopX = std::max(stopX, g_bestDeathX);
+        for (const InputCmd& c : g_best) {
+            if (c.step < stopTick) partial.push_back(c);
+        }
+    }
+
+    std::string toastMsg;
+    bool savedOk = false;
+    if (!partial.empty() && stopTick > 0) {
+        char name[128];
+        snprintf(name, sizeof(name),
+                 g_cfg.coinFiles ? "%s/solution_lv%d_coins.txt"
+                                 : "%s/solution_lv%d_dp.txt",
+                 DATA_DIR, g_cfg.levelId);
+        if (writeInputsFile(name, partial)) {
+            writeSolvedWith(name, Mod::get()->getVersion().toVString());
+            float pct = 0.f;
+            if (pl && pl->m_levelLength > 1.f) {
+                pct = std::clamp(stopX / pl->m_levelLength * 100.f, 0.f, 99.9f);
+            }
+            SolutionRange sr;
+            sr.partial = g_cfg.partialRange;
+            sr.earlyExit = true;
+            sr.active = true;
+            sr.startIdx = g_cfg.startPosIdx;
+            sr.endIdx = g_uiGoalStopIdx;
+            sr.startX = g_spawnRow.valid ? g_spawnRow.x : 0.f;
+            sr.endX = tookLiveFlight
+                ? ((g_cfg.goalStopX > 0.f) ? std::min(g_cfg.goalStopX, stopX) : stopX)
+                : g_cfg.goalStopX;
+            sr.stopPct = pct;
+            writeSolutionRange(name, sr);
+            itermap::save(g_cfg.levelId, false);
+            savedOk = true;
+            const bool sliced = (levelslice::g_phase == levelslice::Sliced);
+            char msg[192];
+            snprintf(msg, sizeof(msg),
+                     "gdsolver: saved partial solve (~%.1f%%, %zu inputs)%s",
+                     (double)pct, partial.size(), sliced ? " [slice]" : "");
+            toastMsg = msg;
+            writeResult(std::string("dpsolve: early save & quit -> ") + name
+                        + " (tick=" + std::to_string(stopTick) + " x=" + std::to_string((int)stopX) + ")");
+        }
+    }
+    if (!savedOk) {
+        toastMsg = "gdsolver: no verified clicks to save yet - exited";
+        writeResult("dpsolve: early quit with no verified inputs to save");
+    }
+
+    endSession("user_quit_hotkey");
+    Loader::get()->queueInMainThread([toastMsg, savedOk]() {
+        notify::show(toastMsg,
+                     savedOk ? NotificationIcon::Success : NotificationIcon::Warning,
+                     4.5f);
+    });
+    return savedOk;
 }
 
 }  // namespace dpsolve
